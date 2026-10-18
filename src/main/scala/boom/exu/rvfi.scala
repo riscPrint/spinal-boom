@@ -221,7 +221,9 @@ class RvfiTracker(nRs: Int, nBr: Int, nAddr: Int, nStore: Int, nLoad: Int)(impli
     val bytes = byteMask(uop.mem_size).resize(xLen / 8)
     val is_load = uop.uses_ldq
     val is_amo = uop.is_amo && uop.mem_cmd =/= M_XSC
-    val is_store = uop.uses_stq && !uop.is_fence
+    // A failed SC (rd != 0) writes no memory
+    val sc_failed = uop.mem_cmd === M_XSC && wdata =/= 0
+    val is_store = uop.uses_stq && !uop.is_fence && !sc_failed
     val rmask = Mux(!trap && (is_load || is_amo), bytes, U(0, xLen / 8 bits))
     val wmask = Mux(!trap && is_store, bytes, U(0, xLen / 8 bits))
     // Aligned mode (RISCV_FORMAL_ALIGNED_MEM): the word-aligned address, with the
