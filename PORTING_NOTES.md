@@ -53,9 +53,10 @@ master, for the pieces BOOM depends on) and `../ref/rocket-chip/dependencies/har
 * **DontCare.** firtool lowers Chisel `DontCare` to 0, and upstream relies on that (e.g. the LSU's
   integer writeback leaves `fflags.valid` as DontCare). `SpinalBoomConfig` sets
   `dontCareGenAsZero`, so `assignDontCare()` generates 0 as well.
-* **SyncReadMem.** Chisel's `SyncReadMem` is simulated by firtool / chipyard as a registered
-  address plus an asynchronous read, so a same-cycle write to the read address is visible
-  (write-first). Spinal's `readSync` would return the old data. All synchronous-read memories go
+* **SyncReadMem.** Chisel leaves `SyncReadMem` read-during-write undefined by default; the
+  firtool / chipyard flow simulates it as a registered address plus an asynchronous read, so a
+  same-cycle write to the read address is visible (write-first). The port reproduces that
+  lowering (a compatibility choice, not a Chisel guarantee). Spinal's `readSync` would return the old data. All synchronous-read memories go
   through `readSyncChisel` (`rocketchip.util.MemAugment`), `SyncReadVecMem` or `SyncReadMemC`, which
   reproduce the Chisel behaviour.
 * **Dynamic bit select.** Chisel's `x(idx: UInt)` is `(x >> idx)(0)`, i.e. 0 when `idx` is out of
@@ -118,6 +119,11 @@ Both found by ACT4; each is a small, commented change and easy to revert.
 * **`debug_sc_fail_cnt`**: the D$ asserts after 100 failed SCs in a row to one address. That is
   legal software behaviour (ACT's `Zalrsc-sc.{w,d}` deliberately retry an SC outside the
   reservation set 100 times), but the assertion stops the simulation.
+* **NBDTLB refill after `sfence.vma`** (found in review, not fixed): `invalidate_refill` is
+  computed but unused, so a walk that was in flight when an `sfence.vma` arrived still installs
+  its (possibly stale) result. Rocket's TLB invalidates such refills.
+* **NBDTLB drops `ae_ptw`** (found in review, not fixed): a PTE read denied by PMP/PMA should be
+  an access fault; BOOM's NBDTLB only keeps `ae_final`, so it becomes a page fault.
 * `instret_overflow` (riscv-tests): CSR written at execute, retirement counted at commit.
 
 ## Simulation harness notes

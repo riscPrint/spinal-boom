@@ -57,17 +57,20 @@ pipeline order, then verification, then the two bug fixes.
 | 12 | boom.ifu: frontend, I$, fetch target queue and fetch buffer | §6 | no |
 | 13 | boom.exu: decode and rename | §7, §8 | no |
 | 14 | boom.exu: dispatch, issue queues and register files | §7.4, §9, §10.1 | no |
-| 15 | boom.exu: functional and execution units, FP pipeline | §10 | no |
+| 15 | boom.exu: functional and execution units, FP pipeline | §10 (and the RVFI operand hooks, §18.3) | no |
 | 16 | boom.exu: RVFI trace tracker (port only) | §18.3 | no |
-| 17 | boom.exu: reorder buffer and core | §11, §12 | no |
+| 17 | boom.exu: reorder buffer and core | §11, §12 (and the RVFI wiring, §18.3) | no |
 | 18 | boom.lsu: NBDTLB, non-blocking D$, MSHRs and LSU | §13–15 | **yes**: the core is complete |
 | 19 | boom: tile, config fragments and elaboration tests | §17 | yes |
 | 20 | formal: riscv-formal RVFI monitors for simulation | §18.3 | yes |
-| 21 | sim: Verilator harness and riscv-tests | §17.2, §18.1 | yes |
+| 21 | sim: Verilator harness and riscv-tests | §17.2, §18.2 | yes |
 | 22 | formal: riscv-formal harness | §18.4 | yes |
 | 23 | act4: riscv-arch-test (ACT4) configuration and runner | §18.5 | yes |
 | 24 | lsu: keep misaligned and access-faulting AMO/SC out of the D$ | §19.1 | yes |
 | 25 | lsu/tlb: honour the PTW's page fault in the NBDTLB | §19.2 | yes |
+| 26 | docs: architecture and porting paper | this document | yes |
+| 27 | rvfi: report no memory write for a failed SC | §18.3 | yes |
+| 28 | docs: corrections from review | this document, `PORTING_NOTES.md` | yes |
 
 Within each layer the packages refer to each other in a cycle
 (`rocketchip.config` → `rocketchip.tile` → `rocketchip.rocket` → `config`, and
@@ -75,8 +78,12 @@ Within each layer the packages refer to each other in a cycle
 once its last commit is in. The split is for reading, not bisecting. Commits 18
 onward each compile with `sbt Test/compile`.
 
-Commit 18 contains the LSU and NBDTLB exactly as upstream wrote them; commits 24
-and 25 change them. `git show <commit>` on those two shows each fix in
+The RVFI port is spread over three commits: the operand and branch hooks in the
+execution units arrive with commit 15, the tracker in 16, and its wiring into
+the core in 17. All of it is behind `enableRVFI` and absent from upstream.
+
+Commit 18 contains the LSU and NBDTLB with upstream's behaviour (translated to
+Spinal as §3 describes); commits 24 and 25 change that behaviour. `git show <commit>` on those two shows each fix in
 isolation, and reverting either one restores upstream behaviour.
 
 ---
@@ -98,8 +105,9 @@ papers in several ways that this document returns to:
 - **Single-cycle rollback.** The rename map table keeps a committed copy and
   the free list a speculative-allocation mask. An exception restores both at
   once instead of walking the ROB (§8.1, §12.4).
-- **Loads and stores split into AGEN and DGEN.** A store or AMO occupies one
-  issue slot but issues twice: address generation and data generation (§9.2).
+- **Stores split into AGEN and DGEN.** A store, SC or AMO occupies one issue
+  slot but issues twice: address generation and data generation (§9.2). Loads
+  and LR need only AGEN.
 
 The small configuration:
 
@@ -115,7 +123,7 @@ The small configuration:
 | FTQ / fetch buffer | 16 / 8 | `ftq`, `numFetchBufferEntries` |
 | I$ / D$ | 16 KiB each: 64 sets × 4 ways × 64 B lines | `icache`, `dcache` |
 | D$ MSHRs | 2 (+1 MMIO) | `DCacheParams.nMSHRs` |
-| D-TLB / I-TLB / L2 TLB | 8 ways / rocket TLB / 512 entries, direct-mapped | `nTLBWays`, `nL2TLBEntries` |
+| D-TLB / L2 TLB | 8 base-page slots (2 tags × 4 sectors) + 4 superpage + 1 special / 512 entries, direct-mapped | `nTLBWays`, `nL2TLBEntries` |
 | Branch predictor | TAGE-L: FA micro-BTB, BIM, BTB, TAGE, loop | `withTAGELBPD` |
 | FPU | F and D, 4-cycle FMA, iterative div/sqrt | `fpu` |
 | Privilege / VM | M, S, U; Sv39; 8 PMP entries | `useVM`, `nPMPs` |
@@ -197,13 +205,16 @@ call Spinal's own `Cat(seq)` without `: _*`, because it is LSB-first.
 
 ### 3.3 Memories: `readSyncChisel`
 
-Chisel's `SyncReadMem`, as firtool and chipyard simulate it, is a registered
-address followed by an asynchronous read: a write in the same cycle to the
-address being read is visible (write-first). Spinal's `readSync` returns the
-old data (read-first). BOOM's predictors and FTQ depend on write-first. Every
-synchronous-read memory in the port therefore goes through `readSyncChisel` (in
-`rocketchip/util/package.scala`), `SyncReadVecMem` or `SyncReadMemC`, which
-reproduce the Chisel behaviour.
+Chisel's `SyncReadMem` leaves read-during-write to the same address
+*undefined* by default. In practice the firtool flow used with chipyard lowers
+it in simulation to a registered address followed by an asynchronous read, so
+a same-cycle write to the address being read is visible (write-first).
+Spinal's `readSync` returns the old data (read-first). The port chooses to
+reproduce the write-first lowering, so that simulation matches what upstream
+BOOM was tested with: every synchronous-read memory goes through
+`readSyncChisel` (in `rocketchip/util/package.scala`), `SyncReadVecMem` or
+`SyncReadMemC`. This is a compatibility choice, not a language guarantee;
+which collisions upstream actually relies on has not been audited.
 
 ### 3.4 Interfaces and indexing
 
@@ -271,8 +282,9 @@ memory run in the D$ as usual, and AMOs to uncached regions take access faults.
 
 `rocket/CSR.scala` is rocket's `CSRFile`, used unchanged. It implements M/S/U,
 trap entry and return, delegation, interrupts, counters (2 HPM counters on the
-small config), PMP registers, `satp` and debug. BOOM drives it from commit
-(§16). Vector CSRs are not supported (`require(!usingVector)`). Hypervisor
+small config), PMP registers, `satp` and debug. BOOM accesses CSRs from execution,
+non-speculatively because CSR instructions are serialised, and reports
+retirement and traps to it from commit (§16). Vector CSRs are not supported (`require(!usingVector)`). Hypervisor
 logic is ported but dead, because BOOM sets `useHypervisor = false`.
 
 ### 4.4 TLB, PTW, PMP
@@ -379,8 +391,10 @@ keeps predictor indices consistent (`enableGHistStallRepair`).
 (one refill at a time), 4-way with LFSR replacement. A miss in F2
 (`s2_miss`) sends a TileLink `Get` for the whole 64-byte line; refill beats
 are written as they arrive and the valid bit is set when the last one lands.
-`fence.i` invalidates every line (`io.invalidate`). Access faults come back as
-`resp.ae` and are delivered as an instruction access fault.
+`fence.i` invalidates every line (`io.invalidate`). Instruction access faults
+come from the I-TLB's PMA and PMP checks (`s2_tlb_resp.ae.inst`), not from the
+cache: `resp.ae` is left don't-care (zero), as upstream, so a TileLink error on
+a refill is not reported.
 
 ### 6.3 Branch predictors
 
@@ -435,13 +449,19 @@ which let local-history predictors undo speculative state.
 ### 6.5 Short-forward branches
 
 A short-forward branch (SFB) is a conditional branch that jumps a few
-instructions forward within the next fetch packet. Rather than predict it,
-BOOM can turn it into predication (`enableSFBOpt`, on by default). F3 records
-candidates (`sfbs`, `sfb_masks`, `shadowable_mask`); F4 confirms the shadowed
-instructions are all "shadowable" (simple ALU ops) and marks them
+instructions forward, landing in the current or the next fetch packet. BOOM
+can turn such a branch into predication (`enableSFBOpt`, on by default). F3
+records candidates (`sfbs`, `sfb_masks`, `shadowable_mask`); a candidate needs
+every instruction it skips to be "shadowable" (`BranchDecode.shadowable`:
+simple ALU ops with suitable register use). F4 accepts a candidate only if it
+is *not* the packet's predicted-taken CFI: a branch predicted taken stays
+ordinary control flow. For example, `bne a0, a1, +8; addi a2, a2, 1` with the
+branch predicted not taken becomes a predicated `addi`; the same branch
+predicted taken redirects fetch as usual. Accepted shadowed uops are marked
 `is_sfb_shadow`. At rename the branch gets a predicate register (§8.3); the
 shadowed uops read it and, when predicated off, copy their old destination
-value instead of computing (`ldst_is_rs1`). The branch never redirects fetch.
+value instead of computing (`ldst_is_rs1`). An accepted SFB never redirects
+fetch and cannot mispredict.
 
 ### 6.6 Fetch buffer
 
@@ -467,7 +487,7 @@ interrupts into an exception on the decoded uop.
 
 ### 7.2 Branch tags
 
-`BranchMaskGenerationLogic` (`boom/util/util.scala`) hands out one of
+`BranchMaskGenerationLogic` (`boom/exu/decode.scala`) hands out one of
 `maxBrCount` tags to each uop that may mispredict (`allocate_brtag`:
 conditional branches that are not SFBs, and JALRs; JALs are resolved in the
 frontend). Every younger uop's `br_mask` has that tag's bit set until the
@@ -488,12 +508,17 @@ stage 2 is dispatched in one cycle to:
 
 - the ROB (`rob.io.enq_*`; the uop's `rob_idx` comes from the ROB tail),
 - the LDQ/STQ (`io.lsu.dis_uops`; the LSU returns `dis_ldq_idx`/`dis_stq_idx`),
-- one issue queue chosen by `iq_type` (`BasicDispatcher`; the FP queue lives
-  in `FpPipeline`),
+- the issue queues selected by `iq_type`, which is a mask (`BasicDispatcher`;
+  the FP queue lives in `FpPipeline`). Usually one queue, but an FP store goes
+  to two: the memory queue for its address (AGEN) and the FP queue, which
+  reads the FP register and sends the data to the LSU (`FC_F2I`, DGEN through
+  `FpPipeline.io.dgen`),
 - the immediate file and the branch-info file (`immregfile`, `bregfile`), one
   cycle later.
 
-Dispatch stalls on a full ROB, LDQ, STQ or issue queue, a rename stall (no free
+`BasicDispatcher` is conservative: a slot is ready only if *every* issue queue
+can accept it, including queues the uop does not go to. Dispatch stalls on a
+full ROB, LDQ or STQ, any full issue queue, a rename stall (no free
 physical register), or a unique instruction that is waiting for the ROB to
 empty (`wait_for_empty_pipeline`). A uop dispatched behind a unique
 instruction in the same packet also waits.
@@ -720,8 +745,13 @@ from the entry (`ras_update`).
 
 ### 11.3 Exceptions and flushes
 
-The ROB's `flush` (one cycle after commit or exception, registered once more
-in the core) redirects to the CSR file's `evec` for exceptions and `xret`,
+Timing: in cycle T the excepting uop is at the ROB head and the ROB throws it
+(`exception_thrown`, a wire), raising `com_xcpt` and `flush` combinationally in
+the same cycle; a `flush_on_commit` instruction raises `flush` in its commit
+cycle. The core registers `flush` and redirects the frontend in T+1 (the
+execution units and LSU see the registered flush as their kill). The ROB sees
+`RegNext(RegNext(exception_thrown))` in T+2 and spends T+3 in `s_rollback`.
+The redirect goes to the CSR file's `evec` for exceptions and `xret`,
 to the same PC for `refetch`, or to the next PC for `flush_on_commit`
 instructions (`FlushTypes`). The global history is cleared on these flushes.
 
@@ -735,7 +765,9 @@ instructions (`FlushTypes`). The global history is cleared on these flushes.
 
 The ROB is `numRobRows` rows of `coreWidth` banks; `rob_idx` is
 row ++ bank. Per entry it keeps valid, busy, unsafe, exception and predicated
-bits plus the uop (in a 1R1W memory). Pointers: `rob_head`, `rob_tail` and
+bits in registers. The uop is split: the fields commit needs often
+(`RobCompactUop`) go in a 1R1W memory, the rest in a register vector, and the
+commit uop is reassembled from both. Pointers: `rob_head`, `rob_tail` and
 `rob_pnr`.
 
 ### 12.2 Writeback
@@ -761,8 +793,8 @@ from three sources: exceptions set at dispatch (decode-time: illegal
 instruction, frontend faults, interrupts), the LSU (`lxcpt`: misaligned, page
 and access faults) and CSR replays. When the excepting uop reaches the head,
 the ROB throws it (`exception_thrown`): `com_xcpt` goes to the CSR file and
-`flush` to the frontend. Two cycles later the state machine enters
-`s_rollback` for one cycle: the tail is set to the head, the rename stages
+`flush` to the frontend (§11.3 has the cycle-by-cycle timing). Three cycles
+later the state machine spends one cycle in `s_rollback`: the tail is set to the head, the rename stages
 restore the committed map table and free the speculative allocations. BOOM v3
 spent one cycle per ROB row unwinding here.
 
@@ -842,9 +874,11 @@ stage) it searches the STQ:
   instead (`wb_ldst_forward_valid`).
 - On a 1-wide LSU, a load that keeps conflicting is held back
   (`block_load_wakeup`) so the store it waits for can drain.
-- Load-to-store forwarding (`enableLoadToStoreForwarding`): a younger store
-  whose data register is this load's destination can take the loaded value
-  directly (`stld_prs2_matches`).
+- Load-to-store forwarding: a younger store whose data register is this load's
+  destination could take the loaded value directly (`stld_prs2_matches`).
+  The match needs `enableLoadToStoreForwarding` and the STQ write additionally
+  needs `enableStLdForwarding`, which is off by default, so the small config
+  does not do this.
 - Loads to uncacheable addresses wait until they are at the ROB head
   (`commit_load_at_rob_head`) with all older stores gone.
 
@@ -873,7 +907,8 @@ to the D$ by "store commit"; `stq_head` frees the entry once the D$
 acknowledges (`succeeded`). A nacked store flushes the execute queue and
 rewinds `stq_execute_head`.
 
-AMOs, LR and SC are store-queue entries that also return data. Unlike plain
+AMOs and SC are store-queue entries that also return data. LR is a load
+(LDQ only) that sets a reservation in the D$ (§15.4). Unlike plain
 stores, **an AMO enters the execute queue before it commits**
 (`stq_enq_e.payload.committed || stq_enq_e.payload.uop.is_amo`), because it is
 unique: it reaches the head of the ROB alone and must not wait for itself. Its
@@ -917,9 +952,12 @@ frontend. It checks PMP over the whole fetch request size (§20).
 
 The **PTW** (`rocket/PTW.scala`) serves both TLBs (and a third, unused port)
 through an arbiter: it walks the Sv39 page table through the D$, caching leaf
-entries in a 512-entry L2 TLB. A walk returns the PTE, its level and two fault
-flags: `ae_final` (access fault on the walk) and `pf` (the PTE was invalid or
-used reserved encodings).
+entries in a 512-entry L2 TLB. A walk returns the PTE, its level and three fault
+flags: `ae_ptw` (a PTE read itself was denied by PMP/PMA), `ae_final` (the
+final physical page is not accessible) and `pf` (a valid leaf PTE uses
+reserved encodings). Other invalid PTEs come back with no permissions and fault
+through the permission check. The NBDTLB stores `ae_final` and, after §19.2,
+`pf`; it does not store `ae_ptw` (§20).
 
 ---
 
@@ -948,10 +986,22 @@ lane) or `BoomBankedDataArray` (`numDCacheBanks > 1`).
 
 ### 15.2 MSHRs
 
-`BoomMSHR` tracks one outstanding miss: acquire the line (`AcquireBlock` with
-`NtoB` for reads, `NtoT` for writes), receive `GrantData` into the line buffer,
-evict the victim through the writeback unit if dirty, write metadata, then
-replay the waiting requests from its replay queue (`s_drain_rpq`). Secondary
+`BoomMSHR` tracks one outstanding miss through these states:
+
+1. `s_refill_req` / `s_refill_resp`: acquire the line (`AcquireBlock`, `NtoB`
+   for reads, `NtoT` for writes) and write the `GrantData` beats into the
+   **line buffer**, not the cache.
+2. `s_drain_rpq_loads`: answer waiting plain loads directly from the line
+   buffer. If the replay queue empties without any load being answered (all
+   the requests were speculative and got killed), the line is dropped and
+   never installed (`commit_line` stays false). LR is excluded here: it must
+   go through the cache pipeline to set its reservation.
+3. `s_meta_read` … `s_wb_resp`: read the victim's metadata and, if dirty, clear
+   it and evict through the writeback unit.
+4. `s_commit_line`: copy the line buffer into the data array.
+5. `s_drain_rpq`: replay the remaining requests (stores, AMOs, LR/SC) through
+   the cache pipeline; stores update the pending coherence state.
+6. `s_meta_write_req`: write the tag and coherence state, then send `GrantAck`. Secondary
 misses to the same line join an existing MSHR if the original request had
 enough permission. `BoomIOMSHR` handles uncached accesses (`Get`/`Put`); TileLink
 atomics are not available (§4.2), so uncached AMOs never reach one.
@@ -966,9 +1016,13 @@ consequence for the simulation memory model).
 
 ### 15.4 LR/SC
 
-An LR sets a reservation (`lrsc_addr`, `lrsc_count = lrscCycles - 1`, 80
-cycles). An SC succeeds only if the reservation is still valid and matches;
-intervening misses to the line clear it. The debug counter `debug_sc_fail_cnt`
+An LR reserves the **cache line** (`lrsc_addr` is the block address) and
+starts `lrsc_count` at `lrscCycles - 1` (79). The reservation counts as valid
+only while `lrsc_count > lrscBackoff`, so the final cycles are a back-off window
+in which an SC fails. An SC succeeds if the reservation is valid and its line
+matches. The reservation is cleared by any later successful access through
+lane 0's hit or replay path (including the SC itself) and by a miss to the
+reserved line that lacks permission. The debug counter `debug_sc_fail_cnt`
 asserts after 100 consecutive failed SCs to one address (§20).
 
 ---
@@ -1054,7 +1108,16 @@ memory) environments on the small config (`RISCV_TESTS_ENVS` selects
 environments). Excluded: `ma_data` (it expects misaligned accesses to work;
 BOOM traps on them) and `rv64mi-p-instret_overflow` (§20).
 
-Result: **321 of 321 pass, with the RVFI monitor checking every retirement.**
+Result: **321 of 321 pass** (the tests check themselves). With
+`RISCV_TESTS_RVFI=1` they also pass under the RVFI monitor, with these limits:
+
+- the monitor is generated for **RV64IMC**, so its ISA checks only cover those
+  instructions. A, F/D, B, CSR and most privileged instructions are retired
+  through it, and the stream-consistency checks (order, PC continuity,
+  register values) still apply, but their results are not checked against an
+  ISA model;
+- on a trap marked `mem_fault` the monitor trusts the core and does not check
+  that the access or page fault was right.
 
 ### 18.3 RVFI
 
@@ -1085,8 +1148,8 @@ At commit it emits the records, one cycle later. Details:
 - Memory is reported in **aligned mode** (`RISCV_FORMAL_ALIGNED_MEM`):
   `mem_addr` is 8-byte aligned and masks and data sit in their byte lanes,
   because BOOM traps on misaligned accesses.
-- The value an AMO writes is recomputed from rs2 and the old value; SC
-  reports rs2.
+- The value an AMO writes is recomputed from rs2 and the old value; a
+  successful SC reports rs2 as its data, a failed SC (rd ≠ 0) no memory write.
 - `mem_fault` (port extension, after riscv-formal's `RISCV_FORMAL_MEM_FAULT`)
   marks traps the ISA model does not model: fetch, load and store access
   faults and page faults.
@@ -1176,7 +1239,11 @@ stq_addr(stq_idx).valid := (!exe_agen_killed(w) || will_fire_store_retry(w)) && 
 
 A misaligned (`ma_st`) or access-faulting (`ae_st`) AMO or SC therefore had a
 valid address for one cycle without the exception flag. If its data was
-already there, it entered the execute queue and was sent to the D$. The D$
+already there, it was copied into the execute queue in that cycle. The next
+cycle `mem_xcpt_valid` holds store commits back for one cycle
+(`can_fire_store_commit_slow` requires `!mem_xcpt_valid`), but the queue
+entry is a copy taken before `exception` was set, so the AMO was then sent to
+the D$. The D$
 performed it (changing memory, for an access that should have trapped), and
 its response arrived for a ROB entry the exception had already flushed:
 `[rob] writeback occurred to an invalid ROB entry`.
@@ -1230,6 +1297,18 @@ val pf_inst_array = widthMap(w => ~(x_array(w) | ptw_ae_array(w)) | ptw_pf_array
   counted at commit, so a write to `minstret` and the instruction count
   interact differently than the test expects.
 - `mtval` is 0 on illegal instructions; `time` is not implemented as a CSR.
+
+**Inherited NBDTLB bugs found in review, not fixed** (both present upstream):
+
+- **`sfence.vma` during a page-table walk.** `invalidate_refill` is computed
+  but never used (`lsu/tlb.scala`). If an `sfence.vma` arrives while the PTW is
+  walking for the NBDTLB, the walk's result is still installed as a valid
+  entry, so a stale translation (or, after §19.2, a stale page fault) can
+  survive the fence. Rocket's TLB invalidates such refills.
+- **PTE-read access faults.** The NBDTLB stores `ae_final` but not `ae_ptw`.
+  If reading a PTE is denied by PMP/PMA, the access should raise an access
+  fault; BOOM raises a page fault instead (the entry has no permissions).
+  Rocket's TLB keeps both flags separately.
 
 **Port differences:**
 
