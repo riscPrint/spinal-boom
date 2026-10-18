@@ -104,6 +104,12 @@ Both found by ACT4; each is a small, commented change and easy to revert.
   `mem_xcpt`), so a misaligned or access-faulting AMO/SC could still be sent to the D$: it
   modified memory and its response hit a flushed ROB entry ("[rob] writeback occurred to an
   invalid ROB entry"). The port also holds the address invalid on `ma_st` / `ae_st`.
+* **NBDTLB ignores the PTW's page fault** (`tlb.scala`). Current rocket-chip's PTW reports a leaf
+  PTE with reserved bits set (N/PBMT/bits 63:54) via `resp.pf` and leaves its permission bits as
+  they are; rocket's TLB keeps that per entry, BOOM's NBDTLB (derived from an older rocket TLB)
+  never read it, so loads/stores to such pages succeeded. The port stores `pf` per entry and
+  folds it into the fault arrays as rocket's TLB does. (The I-TLB is rocket's and was correct.)
+
 ## Known non-conformances kept from upstream
 
 * **Fetch PMP granularity.** The I-TLB checks PMP over the whole fetch block

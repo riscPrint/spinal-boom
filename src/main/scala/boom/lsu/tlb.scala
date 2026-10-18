@@ -18,6 +18,7 @@ class NBDTLBEntryData(implicit p: Parameters) extends CoreBundle()(p) {
   val u = Bool()
   val g = Bool()
   val ae = Bool()
+  val pf = Bool() // Spinal port: see ptw_pf_array
   val sw = Bool()
   val sx = Bool()
   val sr = Bool()
@@ -200,6 +201,7 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit p: P
     newEntry.u := pte.u
     newEntry.g := pte.g
     newEntry.ae := io.ptw.resp.payload.ae_final
+    newEntry.pf := io.ptw.resp.payload.pf
     newEntry.sr := pte.sr()
     newEntry.sw := pte.sw()
     newEntry.sx := pte.sx()
@@ -286,9 +288,13 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit p: P
     Mux(cmd_lrsc(w)          , ~zeroA, zeroA))
   val ma_ld_array = widthMap(w => Mux(misaligned(w) && cmd_read(w) , ~eff_array(w), zeroA))
   val ma_st_array = widthMap(w => Mux(misaligned(w) && cmd_write(w), ~eff_array(w), zeroA))
-  val pf_ld_array = widthMap(w => Mux(cmd_read(w)       , ~(r_array(w) | ptw_ae_array(w)), zeroA))
-  val pf_st_array = widthMap(w => Mux(cmd_write_perms(w), ~(w_array(w) | ptw_ae_array(w)), zeroA))
-  val pf_inst_array = widthMap(w => ~(x_array(w) | ptw_ae_array(w)))
+  // Upstream BOOM ignores the PTW's pf, which current rocket-chip uses to report a leaf PTE
+  // with reserved bits (or another invalid encoding) while leaving its permission bits as
+  // they are; such a page was then accessible to loads/stores. Fold it in as rocket's TLB does.
+  val ptw_pf_array = widthMap(w => Cat(False, entries(w).map(_.pf).asUInt).asUInt)
+  val pf_ld_array = widthMap(w => Mux(cmd_read(w)       , ~(r_array(w) | ptw_ae_array(w)) | ptw_pf_array(w), zeroA))
+  val pf_st_array = widthMap(w => Mux(cmd_write_perms(w), ~(w_array(w) | ptw_ae_array(w)) | ptw_pf_array(w), zeroA))
+  val pf_inst_array = widthMap(w => ~(x_array(w) | ptw_ae_array(w)) | ptw_pf_array(w))
 
   val tlb_hit = widthMap(w => real_hits(w).orR)
   val tlb_miss = widthMap(w => vm_enabled(w) && !bad_va(w) && !tlb_hit(w))

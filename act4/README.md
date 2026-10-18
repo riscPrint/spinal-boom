@@ -29,8 +29,8 @@ were triaged.
 
 ## Status
 
-See `../PORTING_NOTES.md` for the upstream non-conformances that remain. Known
-failures:
+See `../PORTING_NOTES.md` for the two upstream BOOM bugs ACT4 found (fixed) and
+the upstream non-conformances that remain. 494 of 524 tests pass; the 30 failures:
 
 | Tests | Cause |
 |-------|-------|
