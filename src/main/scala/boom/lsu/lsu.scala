@@ -978,7 +978,10 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
       val stq_idx = Mux(will_fire_store_agen(w),
         stq_incoming_idx(w), stq_retry_idx)
 
-      stq_addr           .write(stq_idx)(_.valid   := (!exe_agen_killed(w) || will_fire_store_retry(w)) && !pf_st(w)) // Prevent AMOs from executing!
+      // Prevent AMOs from executing! Upstream only checks pf_st; a misaligned or access-faulting
+      // AMO/SC could reach the store-execute queue before mem_xcpt marks it (port bug fix).
+      stq_addr           .write(stq_idx)(_.valid   := (!exe_agen_killed(w) || will_fire_store_retry(w)) &&
+                                                      !pf_st(w) && !ma_st(w) && !ae_st(w))
       stq_addr           .write(stq_idx)(_.payload := Mux(exe_tlb_miss(w), exe_tlb_vaddr(w), exe_tlb_paddr(w).resize(xLen)).resized)
       stq_uop            .write(stq_idx)(_.pdst    := exe_tlb_uop(w).pdst) // Needed for AMOs
       stq_addr_is_virtual.write(stq_idx)(_ := exe_tlb_miss(w))

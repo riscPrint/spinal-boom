@@ -94,6 +94,16 @@ master, for the pieces BOOM depends on) and `../ref/rocket-chip/dependencies/har
 * Config fragments (`WithNSmallBooms`, `WithTAGELBPD`, ...) are functions in `BoomConfigs`.
 * `enableRVFI` (BoomCoreParams) is a port-only option for the riscv-formal harness.
 
+## Upstream bugs fixed in the port
+
+Both found by ACT4; each is a small, commented change and easy to revert.
+
+* **LSU, faulting AMO/SC still executes** (`lsu.scala`, STQ `addr.valid`). Upstream holds an STQ
+  entry's address invalid only on a store page fault ("Prevent AMOs from executing!"). The
+  `exception` flag that keeps an entry out of the store-execute queue is set a cycle later (from
+  `mem_xcpt`), so a misaligned or access-faulting AMO/SC could still be sent to the D$: it
+  modified memory and its response hit a flushed ROB entry ("[rob] writeback occurred to an
+  invalid ROB entry"). The port also holds the address invalid on `ma_st` / `ae_st`.
 ## Known non-conformances kept from upstream
 
 * **Fetch PMP granularity.** The I-TLB checks PMP over the whole fetch block
