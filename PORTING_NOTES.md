@@ -97,7 +97,8 @@ master, for the pieces BOOM depends on) and `../ref/rocket-chip/dependencies/har
 
 ## Upstream bugs fixed in the port
 
-Both found by ACT4; each is a small, commented change and easy to revert.
+The first two were found by ACT4, the third in review; each is a small, commented change and
+easy to revert.
 
 * **LSU, faulting AMO/SC still executes** (`lsu.scala`, STQ `addr.valid`). Upstream holds an STQ
   entry's address invalid only on a store page fault ("Prevent AMOs from executing!"). The
@@ -110,6 +111,10 @@ Both found by ACT4; each is a small, commented change and easy to revert.
   they are; rocket's TLB keeps that per entry, BOOM's NBDTLB (derived from an older rocket TLB)
   never read it, so loads/stores to such pages succeeded. The port stores `pf` per entry and
   folds it into the fault arrays as rocket's TLB does. (The I-TLB is rocket's and was correct.)
+* **NBDTLB installs a refill raced by `sfence.vma`** (`tlb.scala`). `invalidate_refill` was
+  computed but unused, so a walk that was in flight when an `sfence.vma` arrived still installed
+  its (possibly stale) result. The port invalidates the refilled entry as rocket's TLB does.
+  Covered by `boom.lsu.NBDTLBSpec`.
 
 ## Known non-conformances kept from upstream
 
@@ -119,9 +124,6 @@ Both found by ACT4; each is a small, commented change and easy to revert.
 * **`debug_sc_fail_cnt`**: the D$ asserts after 100 failed SCs in a row to one address. That is
   legal software behaviour (ACT's `Zalrsc-sc.{w,d}` deliberately retry an SC outside the
   reservation set 100 times), but the assertion stops the simulation.
-* **NBDTLB refill after `sfence.vma`** (found in review, not fixed): `invalidate_refill` is
-  computed but unused, so a walk that was in flight when an `sfence.vma` arrived still installs
-  its (possibly stale) result. Rocket's TLB invalidates such refills.
 * **NBDTLB drops `ae_ptw`** (found in review, not fixed): a PTE read denied by PMP/PMA should be
   an access fault; BOOM's NBDTLB only keeps `ae_final`, so it becomes a page fault.
 * `instret_overflow` (riscv-tests): CSR written at execute, retirement counted at commit.

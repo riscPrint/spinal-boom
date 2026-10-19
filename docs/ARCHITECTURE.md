@@ -30,7 +30,7 @@ Contents
 16. CSRs, privilege, exceptions and interrupts
 17. The tile and the simulation SoC
 18. Verification
-19. The two upstream bugs fixed in the port
+19. Upstream bugs fixed in the port
 20. Known differences and limitations
 21. File map
 
@@ -71,6 +71,7 @@ pipeline order, then verification, then the two bug fixes.
 | 26 | docs: architecture and porting paper | this document | yes |
 | 27 | rvfi: report no memory write for a failed SC | §18.3 | yes |
 | 28 | docs: corrections from review | this document, `PORTING_NOTES.md` | yes |
+| 29 | lsu/tlb: drop an NBDTLB refill raced by sfence.vma | §19.3 | yes |
 
 Within each layer the packages refer to each other in a cycle
 (`rocketchip.config` → `rocketchip.tile` → `rocketchip.rocket` → `config`, and
@@ -83,8 +84,8 @@ execution units arrive with commit 15, the tracker in 16, and its wiring into
 the core in 17. All of it is behind `enableRVFI` and absent from upstream.
 
 Commit 18 contains the LSU and NBDTLB with upstream's behaviour (translated to
-Spinal as §3 describes); commits 24 and 25 change that behaviour. `git show <commit>` on those two shows each fix in
-isolation, and reverting either one restores upstream behaviour.
+Spinal as §3 describes); commits 24, 25 and 29 onward change that behaviour. `git show <commit>` on each shows the fix in
+isolation, and reverting one restores upstream behaviour.
 
 ---
 
@@ -1099,6 +1100,7 @@ withdraw `a.valid` (s2 kill), so an `m2sPipe` sits on the I$ A channel.
 
 - `ElabSpec` elaborates rocket units; `BoomElabSpec` elaborates BOOM configs.
 - `HardfloatSpec` checks the hardfloat port against Java IEEE doubles.
+- `NBDTLBSpec` drives the data TLB's PTW port directly for directed TLB cases (§19).
 
 ### 18.2 riscv-tests
 
@@ -1206,7 +1208,7 @@ implementation and Sail's reference results.
 - `act4/build.sh` builds the ELFs (with a macOS workaround for udb's bundled
   Linux Z3). `Act4Spec` runs them on `BoomSim`.
 
-Result: **494 of 524 pass** with the two fixes in §19. The 30 failures:
+Result: **494 of 524 pass** with the first two fixes in §19. The 30 failures:
 
 | Tests | Cause |
 |-------|-------|
@@ -1218,10 +1220,11 @@ Result: **494 of 524 pass** with the two fixes in §19. The 30 failures:
 
 ---
 
-## 19. The two upstream bugs fixed in the port
+## 19. Upstream bugs fixed in the port
 
-ACT4 found two bugs in upstream BOOM. Each fix is its own commit at the end of
-the history, small and commented, so either can be reverted.
+ACT4 found the first two bugs in upstream BOOM; review found the later ones.
+Each fix is its own commit at the end of the history, small and commented, so
+any of them can be reverted.
 
 ### 19.1 Faulting AMO/SC sent to the D$
 
@@ -1281,6 +1284,37 @@ val pf_st_array  = widthMap(w => Mux(cmd_write_perms(w), ~(w_array(w) | ptw_ae_a
 val pf_inst_array = widthMap(w => ~(x_array(w) | ptw_ae_array(w)) | ptw_pf_array(w))
 ```
 
+### 19.3 NBDTLB installed refills raced by `sfence.vma`
+
+Commit "lsu/tlb: drop an NBDTLB refill raced by sfence.vma". Found in review.
+
+**Mechanism.** A D-TLB miss starts a page-table walk, which takes many cycles
+(each PTE is read through the D$). If an `sfence.vma` executes in that window,
+the walk may have read PTEs that software has since changed. The NBDTLB
+tracks this: its state machine moves to `s_wait_invalidate`, and
+`invalidate_refill` is true in that state, in `s_request`, and when the fence
+and the response arrive in the same cycle. Upstream BOOM computed
+`invalidate_refill` but never used it, so the walk's result was installed as a
+valid entry anyway and a stale translation survived the fence.
+
+The window is narrow in practice: `sfence.vma` is a unique instruction, so
+every older load and store has committed before it executes, and the walk must
+belong to an instruction that was squashed (a wrong-path load, or one flushed
+by an exception) while its walk was still running.
+
+**Fix.** As in rocket's TLB, invalidate the entry just written when
+`invalidate_refill` holds:
+
+```scala
+e.insert(r_refill_tag, io.ptw.resp.payload.level, newEntry)
+when (invalidate_refill) { e.invalidate() }
+```
+
+for both the superpage and the sectored refill (rocket also leaves the special
+entry alone). `boom.lsu.NBDTLBSpec` drives the NBDTLB's PTW port directly: a
+miss, a walk, a flush-all `sfence.vma` while it is outstanding, then the
+response. Without the fix the next lookup hits; with it, it misses.
+
 ---
 
 ## 20. Known differences and limitations
@@ -1298,13 +1332,8 @@ val pf_inst_array = widthMap(w => ~(x_array(w) | ptw_ae_array(w)) | ptw_pf_array
   interact differently than the test expects.
 - `mtval` is 0 on illegal instructions; `time` is not implemented as a CSR.
 
-**Inherited NBDTLB bugs found in review, not fixed** (both present upstream):
+**Inherited NBDTLB bug found in review, not fixed** (present upstream):
 
-- **`sfence.vma` during a page-table walk.** `invalidate_refill` is computed
-  but never used (`lsu/tlb.scala`). If an `sfence.vma` arrives while the PTW is
-  walking for the NBDTLB, the walk's result is still installed as a valid
-  entry, so a stale translation (or, after §19.2, a stale page fault) can
-  survive the fence. Rocket's TLB invalidates such refills.
 - **PTE-read access faults.** The NBDTLB stores `ae_final` but not `ae_ptw`.
   If reading a PTE is denied by PMP/PMA, the access should raise an access
   fault; BOOM raises a page fault instead (the entry has no permissions).
@@ -1342,7 +1371,7 @@ val pf_inst_array = widthMap(w => ~(x_array(w) | ptw_ae_array(w)) | ptw_pf_array
 | `src/main/scala/boom/exu/` | decode, rename, dispatch, issue, register files, execution units, FP pipeline, ROB, core, RVFI tracker |
 | `src/main/scala/boom/lsu/` | LSU, NBDTLB, D$, MSHRs, prefetcher |
 | `src/main/scala/boom/system/` | `BoomSimTop`, `RvfiMonitor`, `BoomFormalTop`, `GenFormal` |
-| `src/test/scala/` | elaboration tests, hardfloat test, `BoomSim`, riscv-tests and ACT4 runners |
+| `src/test/scala/` | elaboration tests, hardfloat test, NBDTLB test, `BoomSim`, riscv-tests and ACT4 runners |
 | `formal/` | riscv-formal wrapper, checks, run script, RVFI monitors |
 | `act4/` | ACT4 DUT configuration and build script |
 | `PORTING_NOTES.md` | every Chisel→Spinal decision, deliberate differences, bug notes |

@@ -218,12 +218,14 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit p: P
     } elsewhen (io.ptw.resp.payload.level < (pgLevels-1)) {
       for ((e, i) <- superpage_entries.zipWithIndex) when (r_superpage_repl_addr === i) {
         e.insert(r_refill_tag, io.ptw.resp.payload.level, newEntry)
+        when (invalidate_refill) { e.invalidate() }
       }
     } otherwise {
       val waddr = Mux(r_sectored_hit, r_sectored_hit_addr, r_sectored_repl_addr)
       for ((e, i) <- sectored_entries.zipWithIndex) when (waddr === i) {
         when (!r_sectored_hit) { e.invalidate() }
         e.insert(r_refill_tag, U(0, 1 bits), newEntry)
+        when (invalidate_refill) { e.invalidate() }
       }
     }
   }
