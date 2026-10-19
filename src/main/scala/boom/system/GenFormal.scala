@@ -1,6 +1,7 @@
 package boom.system
 
 import spinal.core._
+import spinal.core.internals.PhaseCheckCrossClock
 import rocketchip.config._
 import boom.common._
 
@@ -20,6 +21,11 @@ object GenFormal {
   def main(args: Array[String]): Unit = {
     val outDir = if (args.nonEmpty) args(0) else "formal"
     implicit val p: Parameters = params()
-    SpinalBoomConfig(outDir).generateVerilog(new BoomFormalTop(resetVector))
+    val config = SpinalBoomConfig(outDir)
+    // Skip the clock-crossing lint (~2s). BOOM has one clock domain: src/main creates no
+    // ClockDomain or ClockingArea, and RvfiMonitor maps the current one. Generation passed
+    // this check before it was dropped. Tests and simulation still run it.
+    config.phasesInserters += { phases => phases --= phases.filter(_.isInstanceOf[PhaseCheckCrossClock]) }
+    config.generateVerilog(new BoomFormalTop(resetVector))
   }
 }
