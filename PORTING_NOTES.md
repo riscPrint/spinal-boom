@@ -97,7 +97,7 @@ master, for the pieces BOOM depends on) and `../ref/rocket-chip/dependencies/har
 
 ## Upstream bugs fixed in the port
 
-The first two were found by ACT4, the third in review; each is a small, commented change and
+The first two were found by ACT4, the others in review; each is a small, commented change and
 easy to revert.
 
 * **LSU, faulting AMO/SC still executes** (`lsu.scala`, STQ `addr.valid`). Upstream holds an STQ
@@ -115,6 +115,11 @@ easy to revert.
   computed but unused, so a walk that was in flight when an `sfence.vma` arrived still installed
   its (possibly stale) result. The port invalidates the refilled entry as rocket's TLB does.
   Covered by `boom.lsu.NBDTLBSpec`.
+* **NBDTLB drops the PTW's `ae_ptw`** (`tlb.scala`). The entry had one `ae` bit, filled from
+  `ae_final` and used where rocket uses `ae_ptw`, so a walk that could not read a PTE (address
+  outside memory, or PMP-denied) gave a page fault instead of an access fault. The port keeps
+  `ae_ptw` and `ae_final` separately, as rocket's TLB does; `ae_final` therefore no longer hides
+  a permission page fault. Covered by `tests/vm/ae_ptw.S` (`VmTestsSpec`).
 
 ## Known non-conformances kept from upstream
 
@@ -124,8 +129,6 @@ easy to revert.
 * **`debug_sc_fail_cnt`**: the D$ asserts after 100 failed SCs in a row to one address. That is
   legal software behaviour (ACT's `Zalrsc-sc.{w,d}` deliberately retry an SC outside the
   reservation set 100 times), but the assertion stops the simulation.
-* **NBDTLB drops `ae_ptw`** (found in review, not fixed): a PTE read denied by PMP/PMA should be
-  an access fault; BOOM's NBDTLB only keeps `ae_final`, so it becomes a page fault.
 * `instret_overflow` (riscv-tests): CSR written at execute, retirement counted at commit.
 
 ## Simulation harness notes

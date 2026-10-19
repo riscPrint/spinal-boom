@@ -72,6 +72,7 @@ pipeline order, then verification, then the two bug fixes.
 | 27 | rvfi: report no memory write for a failed SC | §18.3 | yes |
 | 28 | docs: corrections from review | this document, `PORTING_NOTES.md` | yes |
 | 29 | lsu/tlb: drop an NBDTLB refill raced by sfence.vma | §19.3 | yes |
+| 30 | lsu/tlb: keep the PTW's ae_ptw in the NBDTLB | §19.4 | yes |
 
 Within each layer the packages refer to each other in a cycle
 (`rocketchip.config` → `rocketchip.tile` → `rocketchip.rocket` → `config`, and
@@ -84,7 +85,7 @@ execution units arrive with commit 15, the tracker in 16, and its wiring into
 the core in 17. All of it is behind `enableRVFI` and absent from upstream.
 
 Commit 18 contains the LSU and NBDTLB with upstream's behaviour (translated to
-Spinal as §3 describes); commits 24, 25 and 29 onward change that behaviour. `git show <commit>` on each shows the fix in
+Spinal as §3 describes); commits 24, 25, 29 and 30 change that behaviour. `git show <commit>` on each shows the fix in
 isolation, and reverting one restores upstream behaviour.
 
 ---
@@ -945,7 +946,7 @@ pages), plus superpage entries and a special entry for PMP-fragmented pages;
 all are searched associatively. It checks
 permissions, PMAs (cacheable, AMO support) and PMPs, and has one port per LSU
 lane. Each entry stores the PPN, the PTE permission bits (`sr`, `sw`, `sx`,
-`pr`, `pw`, `px`, `u`, `g`), access-fault (`ae`) and PMA attributes. Section
+`pr`, `pw`, `px`, `u`, `g`), access-fault flags (`ae_ptw`, `ae_final`, §19.4) and PMA attributes. Section
 19.2 adds `pf`.
 
 The **I-TLB** is rocket's `TLB` (`rocket/TLB.scala`), instantiated by the
@@ -957,8 +958,8 @@ entries in a 512-entry L2 TLB. A walk returns the PTE, its level and three fault
 flags: `ae_ptw` (a PTE read itself was denied by PMP/PMA), `ae_final` (the
 final physical page is not accessible) and `pf` (a valid leaf PTE uses
 reserved encodings). Other invalid PTEs come back with no permissions and fault
-through the permission check. The NBDTLB stores `ae_final` and, after §19.2,
-`pf`; it does not store `ae_ptw` (§20).
+through the permission check. The NBDTLB stores all three (`pf` since §19.2,
+`ae_ptw` since §19.4).
 
 ---
 
@@ -1101,6 +1102,8 @@ withdraw `a.valid` (s2 kill), so an `m2sPipe` sits on the I$ A channel.
 - `ElabSpec` elaborates rocket units; `BoomElabSpec` elaborates BOOM configs.
 - `HardfloatSpec` checks the hardfloat port against Java IEEE doubles.
 - `NBDTLBSpec` drives the data TLB's PTW port directly for directed TLB cases (§19).
+- `VmTestsSpec` runs the directed virtual-memory programs in `tests/vm` (built
+  by `tests/vm/build.sh`; each also passes on Sail), currently `ae_ptw` (§19.4).
 
 ### 18.2 riscv-tests
 
@@ -1208,15 +1211,21 @@ implementation and Sail's reference results.
 - `act4/build.sh` builds the ELFs (with a macOS workaround for udb's bundled
   Linux Z3). `Act4Spec` runs them on `BoomSim`.
 
-Result: **494 of 524 pass** with the first two fixes in §19. The 30 failures:
+Result: with the ACT4 checkout of 2026-10-15 (`56d40ab`, 620 tests), **585
+pass** with all fixes in §19, and 583 without §19.4 (the two
+`SvPMP_sv39_pmp_on_pte_*` tests). An earlier checkout gave 494 of 524 with the
+first two fixes. The 35 failures:
 
 | Tests | Cause |
 |-------|-------|
-| `PMP*` NA4/TOR cases and `PMPZca` (16) | Fetch PMP is checked over the whole 8-byte fetch block, so a narrower PMP region around executing code faults (upstream behaviour, §20). Traced on `PMPZca_aligned_na4`. |
-| `SvPMP*` (4) | Not triaged individually; likely the same cause. |
+| `PMP*` NA4/TOR `legal_lxwr` cases and `PMPZca` (12) | Fetch PMP is checked over the whole 8-byte fetch block, so a narrower PMP region around executing code faults (upstream behaviour, §20). Traced on `PMPZca_aligned_na4`. |
+| `SvPMP_sv39_pmp_on_pa_*` (2) | Not triaged individually; likely the same cause. |
 | `Sv_sv39_canonical_*` (2) | `jalr` to a non-canonical address: BOOM's 40-bit `xepc` turns it into a different invalid address, which the spec allows; Sail keeps the full address. |
-| `ExceptionsSv*` (6) | First mismatch on `..._Smode`: store access fault at VA 0x1_4000_0014. BOOM's `mtval` is the VA; Sail's is truncated to 32 physical-address bits. Looks like a Sail quirk; the others were not checked individually. |
+| `ExceptionsSv_*` (2) | First mismatch on `..._Smode`: store access fault at VA 0x1_4000_0014. BOOM's `mtval` is the VA; Sail's is truncated to 32 physical-address bits. Looks like a Sail quirk; the others were not checked individually. |
 | `Zalrsc-sc.{w,d}` (2) | The test retries a failing SC 100 times; BOOM's `debug_sc_fail_cnt` assertion stops the simulation (§20). |
+| `PMPSm_cfg_A_tor_{bot,zero}`, `PMPSm_cfg_tor_check-01` (3) | New in the 2026-10-15 checkout; not triaged. |
+| `ExceptionsSvZalrsc*`, `ExceptionsSvSm_*_mprv_*` (5) | New in that checkout; not triaged (likely the `ExceptionsSv*` cause). |
+| `Sm_F`, `Sm_mcsr_access`, `Sm_mcsr_cntr`, `Sstvecd`, `Zicntr{S,Sm,U}` (7) | New in that checkout; not triaged. |
 
 ---
 
@@ -1315,6 +1324,41 @@ entry alone). `boom.lsu.NBDTLBSpec` drives the NBDTLB's PTW port directly: a
 miss, a walk, a flush-all `sfence.vma` while it is outstanding, then the
 response. Without the fix the next lookup hits; with it, it misses.
 
+### 19.4 NBDTLB turned PTE-read access faults into page faults
+
+Commit "lsu/tlb: keep the PTW's ae_ptw in the NBDTLB". Found in review.
+
+**Mechanism.** The PTW reports two access-fault flags. `ae_ptw`: a PTE could
+not be read, because its address is outside physical memory or PMP denies the
+read (`PTW.scala`, `resp_ae_ptw`). `ae_final`: the walk succeeded but the
+final page is not accessible. Rocket's TLB keeps both per entry; `ae_ptw`
+suppresses the page fault, and either flag clears the entry's `pr`/`pw`/`px`,
+so the access raises an access fault. BOOM's NBDTLB had a single `ae` bit,
+filled from `ae_final`, and used it in `ae_ptw`'s place. A walk that failed on
+a PTE read returned no permissions and no `ae_final`, so loads and stores got
+a page fault (cause 13/15) instead of an access fault (5/7).
+
+**Fix.** Store both flags and use them as rocket does:
+
+```scala
+val ptw_ae_array   = widthMap(w => Cat(False, entries(w).map(_.ae_ptw).asUInt).asUInt)
+val final_ae_array = widthMap(w => Cat(False, entries(w).map(_.ae_final).asUInt).asUInt)
+val pr_array = widthMap(w => Cat(Fill(nPhysicalEntries, prot_r(w)), normal_entries(w).map(_.pr).asUInt).asUInt
+                             & ~(ptw_ae_array(w) | final_ae_array(w)))   // pw, px alike
+```
+
+A side effect, also as in rocket: `ae_final` no longer suppresses the page
+fault, so a leaf whose permissions fail *and* whose page is inaccessible now
+raises the page fault (the LSU gives `pf` priority over `ae`), which is the
+order the privileged spec gives.
+
+**Test.** `tests/vm/ae_ptw.S` runs in S-mode under Sv39 and makes loads and
+stores whose walk hits a pointer PTE outside physical memory, and a page-table
+page that PMP denies. It expects access faults with the right `mtval`, then
+checks that a mapped page still works. It passes on Sail with ACT4's BOOM
+configuration; on BOOM it fails at its first check without the fix and passes
+with it (`VmTestsSpec`; build with `tests/vm/build.sh`).
+
 ---
 
 ## 20. Known differences and limitations
@@ -1331,13 +1375,6 @@ response. Without the fix the next lookup hits; with it, it misses.
   counted at commit, so a write to `minstret` and the instruction count
   interact differently than the test expects.
 - `mtval` is 0 on illegal instructions; `time` is not implemented as a CSR.
-
-**Inherited NBDTLB bug found in review, not fixed** (present upstream):
-
-- **PTE-read access faults.** The NBDTLB stores `ae_final` but not `ae_ptw`.
-  If reading a PTE is denied by PMP/PMA, the access should raise an access
-  fault; BOOM raises a page fault instead (the entry has no permissions).
-  Rocket's TLB keeps both flags separately.
 
 **Port differences:**
 
@@ -1371,7 +1408,8 @@ response. Without the fix the next lookup hits; with it, it misses.
 | `src/main/scala/boom/exu/` | decode, rename, dispatch, issue, register files, execution units, FP pipeline, ROB, core, RVFI tracker |
 | `src/main/scala/boom/lsu/` | LSU, NBDTLB, D$, MSHRs, prefetcher |
 | `src/main/scala/boom/system/` | `BoomSimTop`, `RvfiMonitor`, `BoomFormalTop`, `GenFormal` |
-| `src/test/scala/` | elaboration tests, hardfloat test, NBDTLB test, `BoomSim`, riscv-tests and ACT4 runners |
+| `src/test/scala/` | elaboration tests, hardfloat test, NBDTLB test, `BoomSim`, riscv-tests, ACT4 and `tests/vm` runners |
+| `tests/vm/` | directed virtual-memory test programs and their build script |
 | `formal/` | riscv-formal wrapper, checks, run script, RVFI monitors |
 | `act4/` | ACT4 DUT configuration and build script |
 | `PORTING_NOTES.md` | every Chisel→Spinal decision, deliberate differences, bug notes |

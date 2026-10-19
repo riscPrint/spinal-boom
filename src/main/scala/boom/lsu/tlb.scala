@@ -17,7 +17,8 @@ class NBDTLBEntryData(implicit p: Parameters) extends CoreBundle()(p) {
   val ppn = UInt(ppnBits bits)
   val u = Bool()
   val g = Bool()
-  val ae = Bool()
+  val ae_ptw = Bool()   // reading a PTE was denied: access fault
+  val ae_final = Bool() // the final page is not accessible
   val pf = Bool() // Spinal port: see ptw_pf_array
   val sw = Bool()
   val sx = Bool()
@@ -200,7 +201,8 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit p: P
     newEntry.c := cacheable(0)
     newEntry.u := pte.u
     newEntry.g := pte.g
-    newEntry.ae := io.ptw.resp.payload.ae_final
+    newEntry.ae_ptw := io.ptw.resp.payload.ae_ptw
+    newEntry.ae_final := io.ptw.resp.payload.ae_final
     newEntry.pf := io.ptw.resp.payload.pf
     newEntry.sr := pte.sr()
     newEntry.sw := pte.sw()
@@ -236,15 +238,19 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit p: P
   val ne = all_entries.size
   val zeroE = U(0, ne bits)
   val zeroA = U(0, ne + 1 bits)
-  val ptw_ae_array = widthMap(w => Cat(False, entries(w).map(_.ae).asUInt).asUInt)
+  // Upstream BOOM stored only ae_final (and used it here as ptw_ae), so a denied PTE read
+  // (ae_ptw) left an entry with no permissions: a page fault instead of an access fault.
+  // Keep both, as rocket's TLB does.
+  val ptw_ae_array = widthMap(w => Cat(False, entries(w).map(_.ae_ptw).asUInt).asUInt)
+  val final_ae_array = widthMap(w => Cat(False, entries(w).map(_.ae_final).asUInt).asUInt)
   val priv_rw_ok   = widthMap(w => Mux(!priv_s || io.ptw.status.sum, entries(w).map(_.u).asUInt, zeroE) | Mux(priv_s, ~entries(w).map(_.u).asUInt, zeroE))
   val priv_x_ok    = widthMap(w => Mux(priv_s, ~entries(w).map(_.u).asUInt, entries(w).map(_.u).asUInt))
   val r_array      = widthMap(w => Cat(True, priv_rw_ok(w) & (entries(w).map(_.sr).asUInt | Mux(io.ptw.status.mxr, entries(w).map(_.sx).asUInt, zeroE))).asUInt)
   val w_array      = widthMap(w => Cat(True, priv_rw_ok(w) & entries(w).map(_.sw).asUInt).asUInt)
   val x_array      = widthMap(w => Cat(True, priv_x_ok(w)  & entries(w).map(_.sx).asUInt).asUInt)
-  val pr_array     = widthMap(w => Cat(Fill(nPhysicalEntries, prot_r(w))   , normal_entries(w).map(_.pr).asUInt).asUInt & ~ptw_ae_array(w))
-  val pw_array     = widthMap(w => Cat(Fill(nPhysicalEntries, prot_w(w))   , normal_entries(w).map(_.pw).asUInt).asUInt & ~ptw_ae_array(w))
-  val px_array     = widthMap(w => Cat(Fill(nPhysicalEntries, prot_x(w))   , normal_entries(w).map(_.px).asUInt).asUInt & ~ptw_ae_array(w))
+  val pr_array     = widthMap(w => Cat(Fill(nPhysicalEntries, prot_r(w))   , normal_entries(w).map(_.pr).asUInt).asUInt & ~(ptw_ae_array(w) | final_ae_array(w)))
+  val pw_array     = widthMap(w => Cat(Fill(nPhysicalEntries, prot_w(w))   , normal_entries(w).map(_.pw).asUInt).asUInt & ~(ptw_ae_array(w) | final_ae_array(w)))
+  val px_array     = widthMap(w => Cat(Fill(nPhysicalEntries, prot_x(w))   , normal_entries(w).map(_.px).asUInt).asUInt & ~(ptw_ae_array(w) | final_ae_array(w)))
   val eff_array    = widthMap(w => Cat(Fill(nPhysicalEntries, prot_eff(w)) , normal_entries(w).map(_.eff).asUInt).asUInt)
   val c_array      = widthMap(w => Cat(Fill(nPhysicalEntries, cacheable(w)), normal_entries(w).map(_.c).asUInt).asUInt)
   val paa_array    = widthMap(w => Cat(Fill(nPhysicalEntries, prot_aa(w))  , normal_entries(w).map(_.paa).asUInt).asUInt)
