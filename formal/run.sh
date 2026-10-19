@@ -13,7 +13,7 @@ shift || true
 
 cd "$root"
 source env.sh
-sbt -batch "runMain boom.system.GenFormal formal"
+scripts/run-main.sh boom.system.GenFormal formal
 
 # riscv-formal expects cores/<name>/ inside its tree. genchecks.py derives the core
 # name and tree from the physical cwd, so link the files, not the directory.
