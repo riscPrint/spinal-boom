@@ -126,4 +126,16 @@ class KonataProbe(tile: BoomTile) extends Area {
   val mispredict    = port(core.brupdate.b2.mispredict)
   val mispRobIdx    = port(core.brupdate.b2.uop.rob_idx)
   val redirectFlush = port(core.io.ifu.redirect_flush)
+
+  // Cycle-equivalence observations. Only instantiated with the existing sim-only probe.
+  // The architectural trace is one cycle behind ROB commit, including destination metadata.
+  val traceLdst = ports(rob.io.commit.uops.map(u => RegNext(u.ldst.pull())))
+  val traceDstType = ports(rob.io.commit.uops.map(u => RegNext(u.dst_rtype.pull())))
+  val redirectValid = port(core.io.ifu.redirect_val)
+  val redirectPc = port(core.io.ifu.redirect_pc)
+  val dcS2Valid = ports(tile.dcache.s2_valid)
+  val dcS2Hit = ports(tile.dcache.s2_hit)
+  val dcS2Nack = ports(tile.dcache.s2_nack)
+  val dcS2Type = port(tile.dcache.s2_type)
+  val lsuNackValid = ports(tile.dcache.io.lsu.nack.map(_.valid))
 }

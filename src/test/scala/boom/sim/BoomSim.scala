@@ -116,13 +116,14 @@ object BoomSim {
    * `konata` adds the pipeline probes `run` needs to write a Konata log.
    */
   def compile(tile: BoomTileParams = BoomConfigs.small(), name: String = "small", wave: Boolean = false,
-              rvfi: Boolean = false, konata: Boolean = false): SimCompiled[BoomSimTop] = {
+              rvfi: Boolean = false, konata: Boolean = false,
+              workspace: String = "simWorkspace"): SimCompiled[BoomSimTop] = {
     implicit val p: Parameters = params(tile, rvfi)
     val cfg = SimConfig
     if (wave) cfg.withVcdWave
     cfg
       .withConfig(SpinalBoomConfig(s"generated/sim/$name"))
-      .workspacePath("simWorkspace")
+      .workspacePath(workspace)
       .workspaceName(name + (if (rvfi) "_rvfi" else "") + (if (konata) "_konata" else "") + (if (wave) "_wave" else ""))
       .withVerilator
       .allOptimisation
@@ -144,13 +145,16 @@ object BoomSim {
    * retired)` gets the cycle count (100-cycle granularity) and retired instructions.
    * `memLatency` gives memory a fixed, stall-free timing (see BoomMemoryAgent).
    * `konata` writes a Konata pipeline log there (needs a `compile(konata = true)` build).
+   * `cycleTrace` records commit, raw TileLink beats and per-cycle control observations
+   * in that directory, aligned to Konata cycle zero. It also disables objdump labels.
    */
   def run(compiled: SimCompiled[BoomSimTop], elfPath: String, maxCycles: Long = 200000, verbose: Boolean = false,
           seed: Int = scala.util.Random.nextInt(),
           onStore: (BigInt, Int, BigInt) => Unit = (_, _, _) => (),
           onFinish: (Long, Long) => Unit = (_, _) => (),
           konata: Option[java.io.File] = None,
-          memLatency: Option[Int] = None): Result = {
+          memLatency: Option[Int] = None,
+          cycleTrace: Option[java.io.File] = None): Result = {
     val elf = new Elf(elfPath)
     val tohost = elf.symbols("tohost")
     var result: Result = Timeout
@@ -180,13 +184,17 @@ object BoomSim {
 
       val tracer = konata.map { f =>
         require(dut.konata != null, "compile with konata = true to write a Konata log")
-        new KonataTracer(dut.konata, f, Disasm(elfPath))
+        new KonataTracer(dut.konata, f, if (cycleTrace.isDefined) Map.empty else Disasm(elfPath))
       }
+      val recorder = cycleTrace.map(f => new CycleRecorder(dut, f))
+      // Also close on assertion/timeout exceptions; incomplete runs never become goldens.
+      onSimEnd { recorder.foreach(_.close()); tracer.foreach(_.close()) }
 
       var done = false
       var tohostWord = BigInt(0)
       var retired = 0L
       dut.clockDomain.onSamplings {
+        recorder.foreach(_.sample())
         tracer.foreach(_.sample())
         // mtime counts cycles unless software wrote it
         val stored = readLong(mtime)
@@ -238,6 +246,7 @@ object BoomSim {
         t.close()
         println(s"Konata log: ${konata.get.getPath}" + (if (t.desyncs != 0) s" (${t.desyncs} tracking mismatches)" else ""))
       }
+      recorder.foreach(_.finish(result, tracer.map(_.desyncs).getOrElse(0L)))
       onFinish(cycles, retired)
     }
     result

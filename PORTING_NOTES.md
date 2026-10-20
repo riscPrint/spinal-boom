@@ -144,3 +144,12 @@ easy to revert.
 * `BoomSim.Platform`: a CLINT (0x0200_0000) and an interrupt generator (0x0C00_0000, words 0/1 =
   meip/seip) are uncached IO regions served from simulation memory; the harness drives the
   interrupt lines from them every cycle and `mtime` counts cycles.
+
+## Cycle-equivalence gate for pipeline refactoring
+
+`scripts/cycle-equivalence.py` records or checks commit cycles, every fired
+TileLink beat, Konata transitions including flushes, and selected per-cycle
+frontend/LSU/cache controls in one deterministic simulation per ELF/preset.
+Instrumentation uses the existing off-by-default Konata probe; core logic is
+unchanged. The reference is `0cb0b69`. See
+[commands, trace formats and coverage limits](docs/CYCLE_EQUIVALENCE.md).
