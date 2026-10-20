@@ -3,8 +3,8 @@ package boom.sim
 import spinal.core._
 import spinal.core.sim._
 import spinal.lib.sim.SparseMemory
-import spinal.lib.bus.tilelink.Param
-import spinal.lib.bus.tilelink.sim.{MemoryAgent, TransactionA}
+import spinal.lib.bus.tilelink.{M2sAgent, Opcode, Param}
+import spinal.lib.bus.tilelink.sim.{MemoryAgent, TransactionA, TransactionB}
 
 import rocketchip.config._
 import boom.common._
@@ -15,13 +15,72 @@ import boom.system.BoomSimTop
  * the requester's permissions. BOOM's D$ (like upstream) drops clean lines without
  * a Release, so that record can say B while the line is gone; the acquire's NtoB /
  * NtoT param is what the client actually holds, and TileLink then requires GrantData.
+ *
+ * `fixedLatency` (for performance measurement) replaces Spinal's randomized timing:
+ * every A request waits exactly that many cycles, channel handshakes never stall,
+ * contended blocks are served in order, and only necessary probes are sent. None
+ * keeps the randomized stress behaviour.
  */
-class BoomMemoryAgent(bus: spinal.lib.bus.tilelink.Bus, cd: ClockDomain, mem: SparseMemory)
+class BoomMemoryAgent(bus: spinal.lib.bus.tilelink.Bus, cd: ClockDomain, mem: SparseMemory,
+                      fixedLatency: Option[Int] = None)
     extends MemoryAgent(bus, cd, memArg = Some(mem))(null) {
+  if (fixedLatency.isDefined) driver.driver.noStall()
+
+  override def delayOnA(a: TransactionA): Unit = fixedLatency match {
+    case Some(n) => if (n > 0) cd.waitSampling(n)
+    case None => super.delayOnA(a)
+  }
+
+  override def reserve(address: Long): Unit = fixedLatency match {
+    case Some(_) => locks.get(address) match {
+      case Some(x) => x.lock()
+      case None => locks(address) = SimMutex().lock()
+    }
+    case None => super.reserve(address)
+  }
+
   override def handleCoherency(a: TransactionA, cap: Int, allowProbePerm: Boolean): CoherencyReport = {
     val r = super.handleCoherency(a, cap, allowProbePerm)
     val fromN = a.param == Param.Grow.NtoB || a.param == Param.Grow.NtoT
     if (fromN && !r.needData) CoherencyReport(needData = true, r.unique) else r
+  }
+
+  // MemoryAgent's, minus the random unnecessary probes / PROBE_PERM / source picks, and
+  // without probing clients that hold nothing
+  override def handleCoherency(address: Long, isAquire: Boolean, sourceAgent: M2sAgent, cap: Int,
+                               allowProbePerm: Boolean): CoherencyReport = {
+    if (fixedLatency.isEmpty) return super.handleCoherency(address, isAquire, sourceAgent, cap, allowProbePerm)
+    val blockAddress = address & ~(blockSize - 1)
+    var needData = false
+    var unique = true
+    val inflights = scala.collection.mutable.ArrayBuffer[spinal.sim.SimThread]()
+    for (m <- bus.p.node.m.masters if m.emits.withBCE) {
+      val isSelf = m == sourceAgent && isAquire
+      // The cap record can only overstate what a client holds (BOOM drops clean lines
+      // silently), so a client recorded at N needs no probe.
+      val held = getCap(m, address)
+      val needProbe = !isSelf && held != Param.Cap.toN && (held == Param.Cap.toT || cap != Param.Cap.toB)
+      if (!needProbe) {
+        if (isSelf && getCap(m, address) == Param.Cap.toN) needData = true
+        if (!isSelf && getCap(m, address) != Param.Cap.toN) unique = false
+      } else inflights += fork {
+        val b = TransactionB()
+        b.opcode = Opcode.B.PROBE_BLOCK
+        b.address = blockAddress
+        b.param = cap match {
+          case Param.Cap.toT => Param.Cap.toN
+          case other => other
+        }
+        b.source = m.mapping.head.bSourceId
+        b.size = log2Up(blockSize)
+        driver.scheduleB(b)
+        val c = waitC(b.source, blockAddress)
+        if (c.opcode == Opcode.C.PROBE_ACK_DATA) mem.write(c.address.toLong, c.data)
+        if (Param.reportPruneToCap(c.param) != Param.Cap.toN) unique = false
+      }
+    }
+    inflights.foreach(_.join())
+    CoherencyReport(needData, unique)
   }
 }
 
@@ -52,19 +111,22 @@ object BoomSim {
   def params(tile: BoomTileParams, rvfi: Boolean = false): Parameters =
     Parameters(tile.copy(core = tile.core.copy(trace = true, enableRVFI = rvfi)), SystemParams(paddrBits = 32, memoryMap = memoryMap))
 
-  /** `rvfi` adds the RVFI port and riscv-formal's RVFI monitor (from formal/). */
+  /**
+   * `rvfi` adds the RVFI port and riscv-formal's RVFI monitor (from formal/).
+   * `konata` adds the pipeline probes `run` needs to write a Konata log.
+   */
   def compile(tile: BoomTileParams = BoomConfigs.small(), name: String = "small", wave: Boolean = false,
-              rvfi: Boolean = false): SimCompiled[BoomSimTop] = {
+              rvfi: Boolean = false, konata: Boolean = false): SimCompiled[BoomSimTop] = {
     implicit val p: Parameters = params(tile, rvfi)
     val cfg = SimConfig
     if (wave) cfg.withVcdWave
     cfg
       .withConfig(SpinalBoomConfig(s"generated/sim/$name"))
       .workspacePath("simWorkspace")
-      .workspaceName(name + (if (rvfi) "_rvfi" else "") + (if (wave) "_wave" else ""))
+      .workspaceName(name + (if (rvfi) "_rvfi" else "") + (if (konata) "_konata" else "") + (if (wave) "_wave" else ""))
       .withVerilator
       .allOptimisation
-      .compile(new BoomSimTop(resetVector, if (rvfi) Some(new java.io.File("formal").getAbsolutePath) else None))
+      .compile(new BoomSimTop(resetVector, if (rvfi) Some(new java.io.File("formal").getAbsolutePath) else None, konata))
   }
 
   sealed trait Result
@@ -76,9 +138,19 @@ object BoomSim {
   /**
    * Run `elfPath`. riscv-tests/ACT convention: a store of 1 to `tohost` is a
    * pass, any other odd value `(code << 1) | 1` is a failure.
+   *
+   * `onStore(addr, sizeLog2, data)` sees every store the D$ acknowledges (data as on
+   * the bus: StoreGen replicates narrow stores across the word). `onFinish(cycles,
+   * retired)` gets the cycle count (100-cycle granularity) and retired instructions.
+   * `memLatency` gives memory a fixed, stall-free timing (see BoomMemoryAgent).
+   * `konata` writes a Konata pipeline log there (needs a `compile(konata = true)` build).
    */
   def run(compiled: SimCompiled[BoomSimTop], elfPath: String, maxCycles: Long = 200000, verbose: Boolean = false,
-          seed: Int = scala.util.Random.nextInt()): Result = {
+          seed: Int = scala.util.Random.nextInt(),
+          onStore: (BigInt, Int, BigInt) => Unit = (_, _, _) => (),
+          onFinish: (Long, Long) => Unit = (_, _) => (),
+          konata: Option[java.io.File] = None,
+          memLatency: Option[Int] = None): Result = {
     val elf = new Elf(elfPath)
     val tohost = elf.symbols("tohost")
     var result: Result = Timeout
@@ -88,7 +160,7 @@ object BoomSim {
 
       val mem = SparseMemory(seed = 0)
       elf.load((a, d) => mem.write(a, d))
-      val agent = new BoomMemoryAgent(dut.io.mem, dut.clockDomain, mem)
+      val agent = new BoomMemoryAgent(dut.io.mem, dut.clockDomain, mem, memLatency)
       import Platform._
       mem.write(msip, 0)
       mem.write(mtimecmp, -1L)
@@ -106,10 +178,16 @@ object BoomSim {
         override def onE(e: TransactionE) = log("E", e)
       })
 
+      val tracer = konata.map { f =>
+        require(dut.konata != null, "compile with konata = true to write a Konata log")
+        new KonataTracer(dut.konata, f, Disasm(elfPath))
+      }
+
       var done = false
       var tohostWord = BigInt(0)
       var retired = 0L
       dut.clockDomain.onSamplings {
+        tracer.foreach(_.sample())
         // mtime counts cycles unless software wrote it
         val stored = readLong(mtime)
         mtimeValue = (if (stored != mtimeValue) stored else mtimeValue) + 1
@@ -123,6 +201,7 @@ object BoomSim {
           result = RvfiError(e.toInt)
         }
         val addr = if (dut.io.tohost.valid.toBoolean) dut.io.tohost.payload.addr.toBigInt else BigInt(-1)
+        if (addr >= 0) onStore(addr, dut.io.tohost.payload.size.toInt, dut.io.tohost.payload.data.toBigInt)
         if (addr >= tohost && addr < tohost + 8) {
           // Merge the stored bytes (StoreGen replicates narrow data across the word)
           val off = (addr - tohost).toInt
@@ -155,6 +234,11 @@ object BoomSim {
         cycles += 100
       }
       if (verbose) println(s"retired $retired instructions in $cycles cycles")
+      for (t <- tracer) {
+        t.close()
+        println(s"Konata log: ${konata.get.getPath}" + (if (t.desyncs != 0) s" (${t.desyncs} tracking mismatches)" else ""))
+      }
+      onFinish(cycles, retired)
     }
     result
   }

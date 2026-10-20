@@ -15,3 +15,10 @@ simWorkspace/
 formal/BoomFormalTop.v
 # Built by tests/vm/build.sh
 tests/vm/build/
+# Block diagrams written by SpinalBlocks (boom/run)
+blocks/
+# Konata logs written by KonataTrace
+konata/
+# gem5 output and benchmark ELFs built by gem5/build.sh
+gem5/results/
+gem5/bench/build/

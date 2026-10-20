@@ -6,9 +6,14 @@ future matrix scheduler) in minutes, before spending RTL time on them. The RTL
 (this repo, and upstream Chisel BOOM) is still the truth: gem5 tells you which
 ideas are worth building, not what the RTL will score.
 
-Nothing in this repo depends on gem5. Keep it that way: gem5 configs and
-scripts live under `gem5/` (not created yet), and nothing in `src/` should
-import or generate from them.
+The setup lives in [`gem5/`](../gem5/README.md): the Docker environment,
+the gem5 config (`gem5/configs/boom.py`), the benchmark builds, and the run and
+calibration scripts. The commands are in that README; this document covers
+the background. Nothing in `src/` depends on gem5. Keep it that way.
+
+This is BOOM's instance of the platform's architecture-exploration tool (the
+ARCH row in [ROADMAP.md](../../ROADMAP.md)). Today it is BOOM-specific; the
+plan to make it work for any RISC-V core is in §9.
 
 Checked against gem5 **v25.1.0.1** (April 2026, the latest release as of
 October 2026). The gem5 Python API changes between releases, so re-check
@@ -49,74 +54,95 @@ and a gem5 win only counts once the RTL reproduces it.
 
 ## 2. Installing on this machine (macOS, Apple silicon)
 
-gem5 is developed and tested on Linux. Native macOS builds sometimes work and
-sometimes break. **Use Docker** (already installed here):
+gem5 runs natively on macOS. `gem5/build.sh` (on the host) clones v25.1.0.1
+into `ref/gem5` and builds `ref/gem5/build_native/RISCV/gem5.opt`; `run.sh`
+and `calibrate.sh` use it. No gem5 source patches.
 
-```sh
-# Official image with all build dependencies. Check the tag list at
-# https://github.com/orgs/gem5/packages for the one matching your gem5 release.
-docker run -it --rm -v ~/fun/saviour:/work -w /work \
-  ghcr.io/gem5/ubuntu-24.04_all-dependencies:latest bash
-
-# Inside the container:
-git clone --branch v25.1.0.1 https://github.com/gem5/gem5 /work/ref/gem5
-cd /work/ref/gem5
-scons build/RISCV/gem5.opt -j$(nproc)
-```
-
-Things to know:
-
-* The first build takes a long time (roughly 30–60 minutes) and needs several
-  GB of RAM. Give Docker at least 8 GB. Later builds are incremental.
+* **Dependencies:** Xcode's clang (gem5 warns that clang 21 isn't on its
+  tested list; it works), Homebrew `python@3.14` (gem5 embeds Python), scons in
+  a venv (`~/opt/gem5-venv`, made by `build.sh`), and Homebrew `gperftools`,
+  `protobuf`, `libpng`, `pkgconf`. `build.sh` prints the `brew install` line
+  for anything missing.
+* **Build time:** about 9 minutes at -j8 on this Mac. Later builds are
+  incremental. gem5 only accepts a build directory under `build/` or one set
+  up with `scons defconfig`, so `build.sh` runs defconfig for `build_native/`
+  once.
+* **Same results as Docker** in bare mode, to the cycle. The native run of
+  the whole benchmark set takes about 2 seconds.
 * Build `gem5.opt` for normal runs. `gem5.debug` is much slower; build it only
   when you need gdb inside gem5. `gem5.fast` is a little faster but drops
   `--debug-flags` tracing, which you need while calibrating; use it for big
   sweeps afterwards.
-* Clone into `ref/gem5`, next to the other reference checkouts, so the
-  container's `/work` mount sees both gem5 and the port.
-* Under Docker on Apple silicon the image runs natively as arm64. gem5
-  simulates RISC-V on any host, so the host architecture doesn't matter.
+
+**Docker** (`gem5/Dockerfile`, `gem5/docker.sh`, Ubuntu 24.04) is still used
+for one thing: building the benchmarks with GCC 13 and picolibc.
+`calibrate.sh` only starts it when the binaries are out of date. The host's
+Homebrew GCC 15 has no picolibc, and switching compilers changes the binaries
+(and so needs an RTL rerun). The Linux build of gem5 in the container
+(`ref/gem5/build/RISCV`) still works on any Linux host. gem5's official images
+(ghcr.io/gem5/...) refused pulls here, probably because of stale ghcr.io
+credentials, so the image is built locally.
 
 ---
 
 ## 3. Getting programs to run in gem5
 
-Our RTL programs are **bare metal** (start at `0x8000_0000`, report through
-`tohost`; see `src/test/scala/boom/sim/BoomSim.scala`). gem5 doesn't implement
-`tohost`/HTIF, so the same ELF won't stop cleanly in gem5. There are two
-options:
+gem5 runs the **same bare-metal ELFs as the RTL** (`gem5/bench/build/bare/`,
+`run.sh -B`), in gem5's bare-metal full-system mode. `boom.py` switches to it
+when the ELF defines `tohost` and `tohost_exit`. The CPU, caches and memory
+are the same objects as in SE mode. How it works, all in `boom.py`, no gem5
+C++ changes:
 
-**A. Syscall-emulation (SE) mode (recommended to start).** gem5 runs a static
-Linux user binary and emulates its system calls. You need a Linux RISC-V
-toolchain. Only `riscv64-unknown-elf-gcc` (bare metal) is installed here; inside
-the Docker container, `apt install gcc-riscv64-linux-gnu` gives you one:
+* **Start:** `RiscvBareMetal` loads the ELF and resets to its entry
+  (0x80000000, M-mode). RAM is 512 MiB from 0x80000000, as in `test.ld`.
+* **Exit:** gem5 has no HTIF. A `PcCountTracker` stops the simulation when
+  `tohost_exit` starts; the script flushes the caches and reads `tohost` from
+  guest memory (exit code is `tohost >> 1`). A device on the `.tohost` page
+  would need new C++, because the ELF loader writes it in 64-byte chunks.
+* **ROI:** the same tracker fires at each `setStats` call: the first resets
+  the stats, the second dumps them. After exit, `bench_stats` (the program's
+  own `mcycle`/`minstret` deltas, as on the RTL) goes to `bare.json`.
+  `summarize.py` takes cycles and instret from there, and mispredicts and
+  misses from the stats dump. The stats window is 5 instructions shorter than
+  the program's window; cycles match.
+* **Unmapped addresses:** wrong-path loads can reach addresses nothing
+  responds to (there is no translation in M-mode). A `BadAddr` responder on
+  the memory bus answers them, as gem5's own full-system boards do.
+* **ISA:** gem5 always decodes Zba/Zbb/Zbs. Its `misa` also reports V and
+  Zicbom/Zicboz, which BOOM lacks; harmless here, and `--set` can turn V off.
+* **Not handled yet:** programs that write `tohost` without calling
+  `tohost_exit` (the riscv-tests ISA tests); `printf` output (dropped).
 
-```sh
-riscv64-linux-gnu-gcc -O2 -static -march=rv64gc_zba_zbb_zbs -o qsort.linux qsort_main.c ...
-```
+Result: ROI instruction counts match the RTL exactly on all 9 benchmarks, and
+`mm` runs (`gem5/CALIBRATION.md`). `calibrate.sh` uses this mode.
 
-**B. Bare-metal full-system mode.** gem5 has a `RiscvBareMetal` workload
-(`src/arch/riscv/RiscvFsWorkload.py`) with a reset vector and RISC-V
-semihosting. To use it, replace the `tohost` write in the benchmark's exit path
-with a semihosting exit or an m5 op. This keeps the program closer to what the
-RTL runs, but takes more setup.
+The benchmarks use riscv-tests' own runtime, patched
+(`gem5/bench/rt/patch_syscalls.sh`) so that `printf` makes no HTIF calls and
+`setStats(0)` stores the ROI cycle and instruction counts to `bench_stats`.
+On the RTL, `BenchmarksSpec` picks those stores up from the D$ store stream.
 
-Either way:
+Things that matter for a fair comparison:
 
-* **Compile both binaries from the same source with the same flags.**
-  `-march` must match the port: RV64GC + Zba/Zbb/Zbs
-  (`act4/boom-rv64gc/boom-rv64gc.yaml`). Different code means you are comparing
-  compilers, not microarchitectures.
-* **Measure only the region of interest.** Startup code differs between
-  bare-metal and Linux binaries. The riscv-tests benchmarks already bracket
-  their kernel with `rdcycle`/`rdinstret` (`setStats` in
-  `ref/riscv-tests/benchmarks/common`). In gem5, put `m5_reset_stats()` /
-  `m5_dump_stats()` (from `include/gem5/m5ops.h`) at the same points, or
-  compare instruction counts to check you measured the same region.
-* Starting set: `ref/riscv-tests/benchmarks` (dhrystone, median, mm, multiply,
-  qsort, rsort, spmv, towers, vvadd, memcpy). They are small and the RTL can
-  run them in reasonable time. CoreMark and Embench are worth adding next; SPEC
-  is only practical in gem5, with SimPoints.
+* **Check the `insts ratio` column.** In bare mode it should be 1.000; any
+  other value means the two sides ran different code.
+* **Deterministic RTL memory.** Spinal's TileLink memory model randomizes
+  latency and sends unnecessary probes (good for testing, bad for
+  measurement). `BenchmarksSpec` uses a fixed latency (`BENCH_MEM_LATENCY`,
+  default 20) and only necessary probes. gem5 uses the same latency
+  (`--mem-latency`).
+* The riscv-tests ROIs are short (1K–250K cycles). Add CoreMark and Embench
+  for longer runs. SPEC is only practical in gem5, with SimPoints.
+
+**SE mode (older, due for removal).** `gem5/bench/Makefile` also builds the
+benchmarks as static Linux binaries (`build/linux/`, run without `-B`) for
+gem5's syscall-emulation mode, where `setStats` becomes m5 ops
+(`gem5/bench/rt/linux_rt.c`). It needs the Linux cross-compiler, can't read
+`mcycle` (so no `mm`, and dhrystone uses `clock()`), and runs glibc's string
+functions instead of riscv-tests', so instruction counts differ (dhrystone
+0.90×). Its cycle counts also depend on the binary's host path: glibc's
+startup reads `/proc/self/exe`, gem5 returns the host path, and the string's
+length moves the heap (up to 11% on dhrystone between `/work/...` in Docker
+and `/Users/...` natively). Use bare mode.
 
 ---
 
@@ -208,6 +234,9 @@ stages) won't show up in gem5 at all.
   `iewToCommitDelay`, `*ToFetchDelay`, ...). Measure BOOM's penalty on a
   microbenchmark with a known mispredict pattern, then set the gem5 delays to
   match. This calibration has the biggest effect on accuracy.
+  In gem5 25.1, `commitToFetchDelay` must stay at 1: larger values deadlock
+  the O3 CPU or panic in the issue queue. Use `fetchToDecodeDelay` and
+  `iewToFetchDelay` instead.
 * **Predictor timing.** BOOM predicts in stages (micro-BTB at F1, BTB/BIM at
   F2, TAGE at F3), and a later stage overrides an earlier one at the cost of a
   bubble. gem5 gives one prediction per fetch. Expect gem5 to look better on
@@ -232,11 +261,12 @@ stages) won't show up in gem5 at all.
 ## 7. Workflow
 
 1. **Calibrate once.** Set up a gem5 config matching `large` (§4–§6). Run the
-   benchmark set on both the RTL (`RiscvTestsSpec` with
-   `RISCV_TESTS_CONFIG=large`) and gem5. Tune the stage delays, memory latency
+   benchmark set on both the RTL (`BenchmarksSpec` with
+   `BENCH_CONFIG=large`) and gem5. Tune the stage delays, memory latency
    and predictor until IPC per benchmark is within roughly 10–15% and the
-   *ranking* of benchmarks matches. Write down the final numbers in
-   `gem5/CALIBRATION.md` (the RTL commit, gem5 version, IPC table).
+   *ranking* of benchmarks matches. `gem5/calibrate.sh -c large` does the runs
+   and prints the table. Write down the final numbers in `gem5/CALIBRATION.md`
+   (gem5 version, what you changed, the IPC table).
 2. **Explore.** Change one thing at a time from the calibrated baseline and
    compare against it, not against the RTL. Run sweeps in parallel (gem5 is
    single-threaded per run).
@@ -265,6 +295,40 @@ L1 miss rates and MSHR occupancy.
 * **Full-system Linux.** gem5 can boot RISC-V Linux (`RiscvLinux` workload).
   This is useful for OS-heavy workloads and gives you nothing for core-only
   studies.
+
+---
+
+## 9. Where this is going
+
+The aim is a tool that does what Arm Fast Models and Synopsys Platform
+Architect do for us, for any RISC-V core, not only BOOM. The design:
+
+* **Code does everything deterministic:** install, check a core's
+  description, generate the gem5 config, run the RTL and gem5, collect and
+  normalize stats, run measurement microbenchmarks, fit settings, score and
+  report. Results are cached by a fingerprint of the RTL, description and
+  settings.
+* **An agent does the judgment calls, through an MCP server** that wraps the
+  same commands: writing a new core's run adapter, writing and correcting its
+  description, working out why a mismatch remains after fitting, and
+  extending gem5 when it can't express a feature. Acceptance thresholds and
+  held-out scoring stay in code.
+* **Per core:** a description file (ISA string, in-order or out-of-order,
+  widths, windows, issue queues, unit latencies, predictor, caches) and one
+  run command (ELF in, JSON cycles, instret and event counters out). BOOM's
+  presets in `gem5/configs/boom.py` become description files, and
+  `BenchmarksSpec` becomes BOOM's run command.
+* **Calibration in two steps:** microbenchmarks measure parameters on the
+  RTL (load-to-use latency, mispredict penalty, unit latencies, effective
+  window size), then an optimizer fits the rest against the RTL's stats and is
+  scored on workloads it never saw.
+* **One binary per benchmark** on both sides (§3, done).
+* **Native, no Docker**, shipped in the platform's tool bundle.
+* **gem5 extensions** for what its O3 model lacks and M6, Zen 5 and C1-Ultra
+  class cores have: decoupled front end with large BTBs, micro-op cache,
+  memory renaming, very wide rename.
+
+The tasks, in order, are under ARCH in [TODO.md](../../TODO.md).
 
 ---
 

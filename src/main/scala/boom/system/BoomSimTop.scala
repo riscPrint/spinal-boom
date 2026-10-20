@@ -19,7 +19,8 @@ import boom.exu.{BoomCoreTrace, RvfiChannel}
  * harness can watch the riscv-tests/ACT `tohost` word without forcing that
  * line out of the cache.
  */
-class BoomSimTop(resetVector: BigInt, rvfiMonitorDir: Option[String] = None)(implicit p: Parameters) extends Component {
+class BoomSimTop(resetVector: BigInt, rvfiMonitorDir: Option[String] = None, konataProbe: Boolean = false)
+                (implicit p: Parameters) extends Component {
   val tile = new BoomTile
 
   val dmemNode = tile.io.dmem.p.node
@@ -63,9 +64,66 @@ class BoomSimTop(resetVector: BigInt, rvfiMonitorDir: Option[String] = None)(imp
     err.setName("io_rvfi_errcode")
   }
 
+  /** Pipeline-stage signals for the simulation's Konata tracer (boom.sim.KonataTracer). */
+  val konata = if (konataProbe) new KonataProbe(tile) else null
+
   val storeAck = tile.dcache.io.lsu.store_ack(0)
   io.tohost.valid := storeAck.valid.pull() && !storeAck.payload.is_hella.pull()
   io.tohost.payload.addr := storeAck.payload.addr.pull()
   io.tohost.payload.data := storeAck.payload.data.pull()
   io.tohost.payload.size := storeAck.payload.uop.mem_size.pull()
+}
+
+/**
+ * Brings out (as top-level ports) the signals a simulation needs to follow every
+ * instruction through the pipeline: fetch-buffer enqueue, the decode and rename2
+ * slots, issue grants, ROB writeback / commit, and the events that kill
+ * instructions (branch mispredict, ROB rollback, front-end redirect).
+ * Simulation only: not part of upstream BOOM.
+ */
+class KonataProbe(tile: BoomTile) extends Area {
+  private val core = tile.core
+  private val fb   = tile.frontend.fb
+  private val rob  = core.rob
+
+  private def port[T <: Data](d: T): T = { val o = out(cloneOf(d)); o := d.pull(); o }
+  private def ports[T <: Data](s: scala.collection.Seq[T]): Vec[T] = {
+    val o = out(Vec.fill(s.size)(cloneOf(s.head)))
+    (o zip s).foreach { case (a, b) => a := b.pull() }
+    o
+  }
+  private val issUops = Seq(core.mem_iss_unit, core.alu_iss_unit, core.unq_iss_unit, core.fp_pipeline.issue_unit)
+    .flatMap(_.io.iss_uops)
+
+  // Fetch buffer enqueue (in_mask already includes enq.valid)
+  val fbMask  = ports(fb.in_mask)
+  val fbPc    = ports(fb.in_uops.map(_.debug_pc))
+  val fbInst  = ports(fb.in_uops.map(_.debug_inst))
+  val fbDoEnq = port(fb.do_enq)
+  val fbClear = port(fb.io.clear)
+  // Decode slots
+  val decValid = ports(core.dec_valids)
+  val decFire  = ports(core.dec_fire)
+  val decPc    = ports(core.dec_uops.map(_.debug_pc))
+  // Rename2 / dispatch slots
+  val disValid  = ports(core.dis_valids)
+  val disFire   = ports(core.dis_fire)
+  val disPc     = ports(core.dis_uops.map(_.debug_pc))
+  val disRobIdx = ports(core.dis_uops.map(_.rob_idx))
+  // Issue grants
+  val issValid  = ports(issUops.map(_.valid))
+  val issRobIdx = ports(issUops.map(_.payload.rob_idx))
+  // ROB writeback (exe units, LSU, FP) and store busy-clears
+  val wbValid   = ports(rob.io.wb_resps.map(_.valid))
+  val wbRobIdx  = ports(rob.io.wb_resps.map(_.payload.uop.rob_idx))
+  val clrValid  = ports(rob.io.lsu_clr_bsy.map(_.valid))
+  val clrRobIdx = ports(rob.io.lsu_clr_bsy.map(_.payload))
+  // Commit
+  val comValid  = ports(rob.io.commit.valids)
+  val comRobIdx = ports(rob.io.commit.uops.map(_.rob_idx))
+  // Kills
+  val rollback      = port(rob.io.rollback)
+  val mispredict    = port(core.brupdate.b2.mispredict)
+  val mispRobIdx    = port(core.brupdate.b2.uop.rob_idx)
+  val redirectFlush = port(core.io.ifu.redirect_flush)
 }
