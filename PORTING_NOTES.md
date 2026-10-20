@@ -153,3 +153,32 @@ frontend/LSU/cache controls in one deterministic simulation per ELF/preset.
 Instrumentation uses the existing off-by-default Konata probe; core logic is
 unchanged. The reference is `0cb0b69`. See
 [commands, trace formats and coverage limits](docs/CYCLE_EQUIVALENCE.md).
+
+## Pipelining API
+
+Transaction stage chains use `spinal.lib.misc.pipeline` from SpinalHDL 1.15.0.
+`Node.insert` creates a `Payload`; `StageLink` places the registers and `Builder`
+connects only payloads read downstream. Construct all consumers before calling
+`Builder`. No custom Link is needed for the fixed-latency units.
+
+* `rocketchip.util.FixedPipeline` replaces Rocket `Pipe`: valid is reset to false,
+  data is uninitialised and captures only when the preceding valid is true.
+  In 1.15.0 `withPayloadHold()` is ineffective without ready, so the final ready
+  is tied to true and every link uses `withoutCollapse()`. This is a constant
+  enable path, with no backpressure and no change in latency. A zero delay is
+  combinational, including its invalid payload.
+* Unconditional `RegNext` / Flow-delay chains use `holdPayload = false`, with no
+  ready signals. `FixedPipeline.delay` carries data only and adds no valid or reset
+  registers. For an uninitialised valid, `resetValid = false` removes the init
+  assignments from the StageLink-generated valid registers after `Builder`.
+* `boom.util.BranchPipeline.boundary` is a `CtrlLink` before a `StageLink`.
+  `terminateWhen` kills using the OLD mask and flush; `bypass(REQ)` clears resolved
+  mask bits in the value crossing the register. Thus next valid is
+  `valid && !(flush || (oldMask & mispredictMask).orR)` and next mask is
+  `oldMask & ~resolveMask`. The final node gets no additional kill. Termination
+  suffices for a free-running pipe; `throwWhen` would also request upstream
+  cancellation/forgetting, which these sources do not need. There is no `flush()`
+  method in this API.
+
+This changes the expression of the original port, not the upstream cycle contract.
+Queues, FSMs, memories, CAMs, rename tables and the ROB remain outside this work.
