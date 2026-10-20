@@ -3,24 +3,6 @@ package rocketchip.util
 import spinal.core._
 import spinal.lib._
 
-/** Chisel's util.Pipe: a `latency`-deep valid/data delay line (valid is reset, data is not). */
-object Pipe {
-  def apply[T <: Data](enqValid: Bool, enqBits: T, latency: Int): Flow[T] = {
-    if (latency == 0) {
-      val out = Flow(cloneOf(enqBits))
-      out.valid := enqValid
-      out.payload := enqBits
-      out
-    } else {
-      val v = RegNext(enqValid) init False
-      val b = RegNextWhen(enqBits, enqValid)
-      apply(v, b, latency - 1)
-    }
-  }
-  def apply[T <: Data](enq: Flow[T], latency: Int): Flow[T] = apply(enq.valid, enq.payload, latency)
-  def apply[T <: Data](enq: Flow[T]): Flow[T] = apply(enq.valid, enq.payload, 1)
-}
-
 /** Chisel's util.Log2(x, width): index of the most significant set bit (renamed to avoid spinal.lib.Log2). */
 object Log2Msb {
   def apply(x: UInt, width: Int): UInt = {

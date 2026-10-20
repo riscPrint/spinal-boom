@@ -31,6 +31,8 @@ object FixedPipeline {
   def apply[T <: Data](input: Flow[T], latency: Int): Flow[T] =
     apply(input.valid, input.payload, latency)
 
+  def apply[T <: Data](input: Flow[T]): Flow[T] = apply(input, 1)
+
   /** Unconditional delay, including invalid cycles, with no reset on any bit. */
   def delay[T <: Data](data: T, latency: Int): T = {
     require(latency >= 0)

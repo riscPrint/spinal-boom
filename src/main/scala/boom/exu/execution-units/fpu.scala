@@ -71,7 +71,7 @@ class FPU(implicit p: Parameters) extends BoomModule with tile.HasFPUParameters
   val fpiu = new tile.FPToInt
   fpiu.io.in.valid := io.req.valid && (fp_ctrl.toint || (fp_ctrl.fastpipe && fp_ctrl.wflags))
   fpiu.io.in.payload := fuInput(None)
-  val fpiu_out = Pipe(RegNext(fpiu.io.in.valid && !fp_ctrl.fastpipe),
+  val fpiu_out = FixedPipeline(RegNext(fpiu.io.in.valid && !fp_ctrl.fastpipe),
                               fpiu.io.out.payload, fpu_latency-1)
   val fpiu_result  = new tile.FPResult
   fpiu_result.data := fpiu_out.payload.toint.resized
@@ -81,7 +81,7 @@ class FPU(implicit p: Parameters) extends BoomModule with tile.HasFPUParameters
   fpmu.io.in.valid := io.req.valid && fp_ctrl.fastpipe
   fpmu.io.in.payload := fpiu.io.in.payload
   fpmu.io.lt := fpiu.io.out.payload.lt
-  val fpmu_double = Pipe(io.req.valid && fp_ctrl.fastpipe, fp_ctrl.typeTagOut === D, fpu_latency).payload
+  val fpmu_double = FixedPipeline(io.req.valid && fp_ctrl.fastpipe, fp_ctrl.typeTagOut === D, fpu_latency).payload
 
   // Response (all FP units have been padded out to the same latency)
   io.resp.valid := fpiu_out.valid ||

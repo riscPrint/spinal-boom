@@ -190,3 +190,11 @@ explicit synchronous reset assignment is retained. All intermediate response tap
 and the final response remain at their original register positions. The FPU,
 int-to-FP and multiplier wrappers keep the same `connectPipe` interface and gain
 these links through their existing `BranchKillablePipeline` instances.
+
+All Rocket `Pipe` callers now use `FixedPipeline`: the multiplier input, tag and
+product/result padding; `IntToFP` and `FPToFP` input and output stages; the FMA
+post-multiply, pre-round and output padding; BOOM's FP-to-int result padding and
+FP/int-to-FP type tags. Their valid resets and valid-enabled data writes are
+unchanged. The zero-cycle LRU touch adapter also uses the combinational case.
+`Pipe.scala` is removed; its unrelated `Log2Msb` remains in `Log2Msb.scala`.
+Negative delays are rejected at elaboration instead of recursing indefinitely.

@@ -334,7 +334,7 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
   ifpu.io.in.payload.rm  := fp_rm
   ifpu.io.in.payload.typ := io_req.uop.fp_typ
   ifpu.io.in.payload.in1 := io_req.rs1_data.resized
-  val out_double = Pipe(io.req.valid, fp_ctrl.typeTagOut === D, intToFpLatency).payload
+  val out_double = FixedPipeline(io.req.valid, fp_ctrl.typeTagOut === D, intToFpLatency).payload
 
   io.resp.valid           := pipe.io.resp(latency-1).valid
   io.resp.payload.uop     := pipe.io.resp(latency-1).payload.uop
