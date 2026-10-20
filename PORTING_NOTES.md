@@ -215,3 +215,11 @@ only at latency 2; both use reset valids and valid-enabled payload writes. Outpu
 padding retains the same policy. Total FMA latency is exactly
 `1 + min(latency - 1, 2) + max(latency - 3, 0)`. Directed tests cover latencies
 1, 2, 3, 4 and 6, with multiply, add and FMA requests mixed with bubbles.
+
+`UniqueExeUnit`'s CSR response and SFENCE request each use a one-stage
+`FixedPipeline` with `holdPayload = false, resetValid = false`. Every field and
+valid captures every cycle, with no reset or ready path, just like the original
+parallel `RegNext`s. Address/ASID resizing retains the original output truncation.
+Neither path gains a branch/flush kill that was absent in the original code.
+The helper spec covers all four combinations of payload hold and valid reset,
+including reset asserted in the middle of valid traffic.

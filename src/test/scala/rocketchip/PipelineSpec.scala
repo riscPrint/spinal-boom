@@ -9,15 +9,15 @@ class PipelineTestTop extends Component {
   val io = new Bundle {
     val valid = in Bool()
     val data = in UInt(16 bits)
-    val outValid = out Vec(Bool(), 9)
-    val outData = out Vec(UInt(16 bits), 9)
+    val outValid = out Vec(Bool(), 12)
+    val outData = out Vec(UInt(16 bits), 12)
     val delayed = out UInt(16 bits)
   }
-  for ((latency, i) <- Seq(0, 1, 4).zipWithIndex; mode <- 0 until 3) {
+  for ((latency, i) <- Seq(0, 1, 4).zipWithIndex; mode <- 0 until 4) {
     val result = FixedPipeline(io.valid, io.data, latency,
-      holdPayload = mode != 1, resetValid = mode != 2)
-    io.outValid(i * 3 + mode) := result.valid
-    io.outData(i * 3 + mode) := result.payload
+      holdPayload = mode % 2 == 0, resetValid = mode < 2)
+    io.outValid(i * 4 + mode) := result.valid
+    io.outData(i * 4 + mode) := result.payload
   }
   io.delayed := FixedPipeline.delay(io.data, 4)
 }
@@ -32,7 +32,7 @@ class PipelineSpec extends AnyFunSuite {
         dut.clockDomain.waitSampling(8)
         // None denotes an uninitialised payload; it is checked once first written.
         case class Sample(valid: Boolean, data: Option[Int])
-        val states = Array.tabulate(9)(i => Vector.fill(Seq(0, 1, 4)(i / 3))(Sample(false, None)))
+        val states = Array.tabulate(12)(i => Vector.fill(Seq(0, 1, 4)(i / 4))(Sample(false, None)))
         var history = Vector.empty[Int]
         val random = new scala.util.Random(42)
         for (cycle <- 0 until 200) {
@@ -44,11 +44,11 @@ class PipelineSpec extends AnyFunSuite {
           dut.io.valid #= valid
           dut.io.data #= data
           for (i <- states.indices) {
-            val mode = i % 3
+            val mode = i % 4
             val incoming = Sample(valid, Some(data)) +: states(i)
             states(i) = states(i).indices.map { s =>
-              Sample(if (reset && mode != 2) false else incoming(s).valid,
-                if (mode == 1 || incoming(s).valid) incoming(s).data else states(i)(s).data)
+              Sample(if (reset && mode < 2) false else incoming(s).valid,
+                if (mode % 2 == 1 || incoming(s).valid) incoming(s).data else states(i)(s).data)
             }.toVector
           }
           history = (history :+ data).takeRight(4)

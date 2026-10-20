@@ -396,20 +396,24 @@ class UniqueExeUnit(
     alu.io.brupdate    := io_brupdate
     alu.io.kill        := io_kill
 
+    val csrInput = new CSRResp
+    csrInput.uop  := alu.io.resp.payload.uop
+    csrInput.data := alu.io.resp.payload.data
+    csrInput.addr := exe_imm_data.resized
     val c = master(Flow(new CSRResp)).setName("io_csr_resp")
-    c.valid        := RegNext(alu.io.resp.valid && exe_uop.payload.csr_cmd =/= CSR.N)
-    c.payload.uop  := RegNext(alu.io.resp.payload.uop)
-    c.payload.data := RegNext(alu.io.resp.payload.data)
-    c.payload.addr := RegNext(exe_imm_data).resized
+    c << FixedPipeline(alu.io.resp.valid && exe_uop.payload.csr_cmd =/= CSR.N,
+      csrInput, 1, holdPayload = false, resetValid = false)
 
+    val sfenceInput = new SFenceReq
+    sfenceInput.rs1  := exe_uop.payload.pimm(0)
+    sfenceInput.rs2  := exe_uop.payload.pimm(1)
+    sfenceInput.addr := exe_rs1_data.resized
+    sfenceInput.asid := exe_rs2_data.resized
+    sfenceInput.hv   := exe_uop.payload.mem_cmd === M_HFENCEV
+    sfenceInput.hg   := exe_uop.payload.mem_cmd === M_HFENCEG
     val s = master(Flow(new SFenceReq)).setName("io_sfence")
-    s.valid        := RegNext(exe_uop.valid && exe_uop.payload.is_sfence)
-    s.payload.rs1  := RegNext(exe_uop.payload.pimm(0))
-    s.payload.rs2  := RegNext(exe_uop.payload.pimm(1))
-    s.payload.addr := RegNext(exe_rs1_data).resized
-    s.payload.asid := RegNext(exe_rs2_data).resized
-    s.payload.hv   := RegNext(exe_uop.payload.mem_cmd === M_HFENCEV)
-    s.payload.hg   := RegNext(exe_uop.payload.mem_cmd === M_HFENCEG)
+    s << FixedPipeline(exe_uop.valid && exe_uop.payload.is_sfence,
+      sfenceInput, 1, holdPayload = false, resetValid = false)
 
     (Some(c), Some(s))
   } else {
