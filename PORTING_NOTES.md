@@ -248,3 +248,10 @@ runs with zero differences and zero Konata tracking mismatches. All 36 tests in
 `ElabSpec`, `BoomElabSpec`, `HardfloatSpec` and the three pipeline specs passed.
 Goldens remain the recordings from `0cb0b69`; the harness and probe are unchanged.
 These are bounded simulation comparisons, not formal equivalence or silicon proof.
+
+The D-cache s0-to-s2 lanes use branch boundaries and free-running StageLinks.
+Exception, store-failure and s1-kill terms terminate valid without adding ready;
+misses still nack and replay. s1 valid retains its false init, s2 valid has none,
+and payloads capture every cycle. Shared request type and way context has no
+valid. Metadata, replacement, response and nack tags share the matching stage
+payloads. Probe-facing s2_valid/s2_hit/s2_nack/s2_type remain accessible.
