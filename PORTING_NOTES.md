@@ -233,3 +233,18 @@ does NOT clear resolved bits in the captured uop, matching the original DGEN
 path. Neither output gains a final combinational kill.
 Elaboration also covers FMA latencies 3 and 6, exercising zero and three fast
 wakeup stages respectively.
+
+`MemExeUnit`'s optional AGEN stage is a one-stage unconditional flow without valid
+reset or ready. Its input valid checks the old EXE branch mask and its payload
+contains the updated mask and sign-extended address before the StageLink. The
+non-staged configuration stays combinational, and neither configuration gains an
+output kill. The ISS/ARB/RRD/EXE registers and their operand/FTQ/imm/predicate
+companions remain for the later rename/execute step. Saturation/credit counters
+and their single control registers remain state, as do both iterative dividers.
+
+Validation for this step: each of eight commits passed the complete quick gate
+(255 ELF/preset runs, zero differences). The final full gate passed all 1,655
+runs with zero differences and zero Konata tracking mismatches. All 36 tests in
+`ElabSpec`, `BoomElabSpec`, `HardfloatSpec` and the three pipeline specs passed.
+Goldens remain the recordings from `0cb0b69`; the harness and probe are unchanged.
+These are bounded simulation comparisons, not formal equivalence or silicon proof.

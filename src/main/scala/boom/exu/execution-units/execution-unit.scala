@@ -305,16 +305,14 @@ class MemExeUnit(
 
     val agen = master(Flow(new MemGen)).setName("io_agen")
     if (enableAgenStage) {
-      val agen_reg = Reg(Flow(new MemGen))
-      agen_reg.valid    := (
+      val agenInput = new MemGen
+      agenInput.uop  := UpdateBrMask(io_brupdate, exe_uop.payload)
+      agenInput.data := Sext(effective_address, xLen)
+      agen << FixedPipeline(
         exe_uop.valid &&
         exe_uop.payload.fu_code(FC_AGEN) &&
-        !IsKilledByBranch(io_brupdate, io_kill, exe_uop.payload)
-      )
-      agen_reg.payload.uop  := UpdateBrMask(io_brupdate, exe_uop.payload)
-      agen_reg.payload.data := Sext(effective_address, xLen)
-
-      agen := agen_reg
+        !IsKilledByBranch(io_brupdate, io_kill, exe_uop.payload),
+        agenInput, 1, holdPayload = false, resetValid = false)
     } else {
       agen.valid        := exe_uop.valid && exe_uop.payload.fu_code(FC_AGEN)
       agen.payload.uop  := exe_uop.payload
