@@ -198,3 +198,11 @@ FP/int-to-FP type tags. Their valid resets and valid-enabled data writes are
 unchanged. The zero-cycle LRU touch adapter also uses the combinational case.
 `Pipe.scala` is removed; its unrelated `Log2Msb` remains in `Log2Msb.scala`.
 Negative delays are rejected at elaboration instead of recursing indefinitely.
+
+`FPToInt`'s single input stage holds payload on invalid input but does NOT reset
+valid. It therefore uses `FixedPipeline(..., resetValid = false)`. This also
+converts the fixed-latency input path of `FDivSqrtUnit2`; its request/control,
+in-flight and pending-result registers are iterative state and stay unchanged.
+BOOM's separate one-cycle FP-to-int selection-valid delay is an unconditional,
+uninitialised `FixedPipeline.delay`, followed by the original reset-valid,
+payload-holding result padding. These two different reset policies are retained.

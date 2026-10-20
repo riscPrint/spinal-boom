@@ -71,7 +71,7 @@ class FPU(implicit p: Parameters) extends BoomModule with tile.HasFPUParameters
   val fpiu = new tile.FPToInt
   fpiu.io.in.valid := io.req.valid && (fp_ctrl.toint || (fp_ctrl.fastpipe && fp_ctrl.wflags))
   fpiu.io.in.payload := fuInput(None)
-  val fpiu_out = FixedPipeline(RegNext(fpiu.io.in.valid && !fp_ctrl.fastpipe),
+  val fpiu_out = FixedPipeline(FixedPipeline.delay(fpiu.io.in.valid && !fp_ctrl.fastpipe, 1),
                               fpiu.io.out.payload, fpu_latency-1)
   val fpiu_result  = new tile.FPResult
   fpiu_result.data := fpiu_out.payload.toint.resized

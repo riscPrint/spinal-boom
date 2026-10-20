@@ -419,8 +419,9 @@ class FPToInt(implicit p: Parameters) extends FPUModule()(p) {
     val out = master(Flow(new FPToIntOutput))
   }
 
-  val inp = RegNextWhen(io.in.payload, io.in.valid)
-  val valid = RegNext(io.in.valid)
+  val inputStage = FixedPipeline(io.in.valid, io.in.payload, 1, resetValid = false)
+  val inp = inputStage.payload
+  val valid = inputStage.valid
 
   val dcmp = new hardfloat.CompareRecFN(maxExpWidth, maxSigWidth)
   dcmp.io.a := inp.in1
