@@ -182,3 +182,11 @@ connects only payloads read downstream. Construct all consumers before calling
 
 This changes the expression of the original port, not the upstream cycle contract.
 Queues, FSMs, memories, CAMs, rename tables and the ROB remain outside this work.
+
+`BranchKillablePipeline` uses one boundary CtrlLink and one StageLink per original
+register. Payload captures every cycle, including invalid or killed transactions;
+there is no ready path. Each StageLink's valid init is removed and the original
+explicit synchronous reset assignment is retained. All intermediate response taps
+and the final response remain at their original register positions. The FPU,
+int-to-FP and multiplier wrappers keep the same `connectPipe` interface and gain
+these links through their existing `BranchKillablePipeline` instances.
