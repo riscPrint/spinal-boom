@@ -665,17 +665,16 @@ class FPUFMAPipe(val latency: Int, val t: FType)(implicit p: Parameters) extends
     val out = master(Flow(new FPResult))
   }
 
-  val valid = RegNext(io.in.valid)
-  val inp = Reg(new FPInput)
-  when(io.in.valid) {
-    val one = U(1) << (t.sig + t.exp - 1)
-    val zero = (io.in.payload.in1 ^ io.in.payload.in2) & (U(1, fLen + 1 bits) << (t.sig + t.exp)).resize(fLen + 1)
-    val cmd_fma = io.in.payload.ren3
-    val cmd_addsub = io.in.payload.swap23
-    inp := io.in.payload
-    when(cmd_addsub) { inp.in2 := one.resized }
-    when(!(cmd_fma || cmd_addsub)) { inp.in3 := zero }
-  }
+  val adjusted = CombInit(io.in.payload)
+  val one = U(1) << (t.sig + t.exp - 1)
+  val zero = (io.in.payload.in1 ^ io.in.payload.in2) & (U(1, fLen + 1 bits) << (t.sig + t.exp)).resize(fLen + 1)
+  val cmd_fma = io.in.payload.ren3
+  val cmd_addsub = io.in.payload.swap23
+  when(cmd_addsub) { adjusted.in2 := one.resized }
+  when(!(cmd_fma || cmd_addsub)) { adjusted.in3 := zero }
+  val inputStage = FixedPipeline(io.in.valid, adjusted, 1, resetValid = false)
+  val inp = inputStage.payload
+  val valid = inputStage.valid
 
   val fma = new MulAddRecFNPipe((latency - 1) min 2, t.exp, t.sig)
   fma.io.validin := valid

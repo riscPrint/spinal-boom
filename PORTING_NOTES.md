@@ -206,3 +206,12 @@ in-flight and pending-result registers are iterative state and stay unchanged.
 BOOM's separate one-cycle FP-to-int selection-valid delay is an unconditional,
 uninitialised `FixedPipeline.delay`, followed by the original reset-valid,
 payload-holding result padding. These two different reset policies are retained.
+
+`FPUFMAPipe` computes the original add/subtract/multiply operand overrides before
+its input StageLink, which holds the entire adjusted request when input is
+invalid. Its input valid remains uninitialised. `MulAddRecFNPipe` still places
+one register after multiply when its latency is positive and one before rounding
+only at latency 2; both use reset valids and valid-enabled payload writes. Output
+padding retains the same policy. Total FMA latency is exactly
+`1 + min(latency - 1, 2) + max(latency - 3, 0)`. Directed tests cover latencies
+1, 2, 3, 4 and 6, with multiply, add and FMA requests mixed with bubbles.
