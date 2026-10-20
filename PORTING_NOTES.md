@@ -223,3 +223,13 @@ parallel `RegNext`s. Address/ASID resizing retains the original output truncatio
 Neither path gains a branch/flush kill that was absent in the original code.
 The helper spec covers all four combinations of payload hold and valid reset,
 including reset asserted in the middle of valid traffic.
+
+`FPExeUnit`'s fast wakeups use the same CtrlLink/StageLink branch boundary, but
+their valid registers have no reset. The chain remains `dfmaLatency - 3` cycles,
+including its combinational zero-stage case, with every intermediate payload
+captured unconditionally. FP store-data generation is a separate unconditional,
+uninitialised one-cycle flow. It kills valid from the old mask but deliberately
+does NOT clear resolved bits in the captured uop, matching the original DGEN
+path. Neither output gains a final combinational kill.
+Elaboration also covers FMA latencies 3 and 6, exercising zero and three fast
+wakeup stages respectively.

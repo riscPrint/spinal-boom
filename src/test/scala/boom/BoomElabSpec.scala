@@ -32,6 +32,14 @@ class BoomElabSpec extends AnyFunSuite {
   elab("MemExeUnit") { implicit p => new MemExeUnit(hasAGen = true, hasDGen = true) }
   elab("UniqueExeUnit") { implicit p => new UniqueExeUnit(hasCSR = true, hasMul = true, hasDiv = true, hasIfpu = true) }
   elab("FPExeUnit") { implicit p => new FPExeUnit(hasFDiv = true, hasFpiu = true) }
+  test("FPExeUnit with zero and multiple fast-wakeup stages elaborates") {
+    for (latency <- Seq(3, 6)) {
+      val tile = BoomConfigs.small()
+      implicit val p: Parameters = BoomTestParams(tile.copy(core = tile.core.copy(
+        fpu = tile.core.fpu.map(_.copy(sfmaLatency = latency, dfmaLatency = latency)))))
+      SpinalBoomConfig("generated/test").generateVerilog(new FPExeUnit(hasFDiv = true, hasFpiu = true))
+    }
+  }
   elab("IssueUnitCollapsing") { implicit p => new IssueUnitCollapsing(IssueParams(issueWidth = 2, numEntries = 8, iqType = IQ_MEM, dispatchWidth = 2), 4) }
   elab("IssueUnitBanked") { implicit p => new IssueUnitBanked(IssueParams(issueWidth = 2, numEntries = 8, iqType = IQ_ALU, dispatchWidth = 2), 4, false) }
   elab("RenameStage(int)") { implicit p => new RenameStage(1, 52, 4, false) }

@@ -22,6 +22,7 @@ import scala.collection.mutable.ArrayBuffer
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.{Builder, Node, StageLink}
 import rocketchip.rocket.{SFenceReq, CSR}
 import rocketchip.rocket.constants.MemoryOpConstants
 import rocketchip.config.Parameters
@@ -614,8 +615,23 @@ class FPExeUnit(val hasFDiv: Boolean = false, val hasFpiu: Boolean = false)(impl
   fast_wakeups(0).payload.speculative_mask := 0
   fast_wakeups(0).payload.rebusy           := False
   fast_wakeups(0).payload.bypassable       := True
-  for (i <- 0 until fastWakeupLatency) {
-    fast_wakeups(i+1) := RegNext(UpdateBrMask(io_brupdate, io_kill, fast_wakeups(i)))
+  val wakeupNodes = Vector.fill(fastWakeupLatency + 1)(Node())
+  val wakeupPayload = wakeupNodes.head.insert(fast_wakeups(0).payload)
+  wakeupNodes.head.valid := fast_wakeups(0).valid
+  val wakeupLinks = (0 until fastWakeupLatency).flatMap { i =>
+    val boundary = Node()
+    Vector(BranchPipeline.boundary(wakeupNodes(i), boundary, wakeupPayload, io_brupdate, io_kill),
+      StageLink(boundary, wakeupNodes(i + 1)))
+  }
+  for (i <- 1 to fastWakeupLatency) {
+    fast_wakeups(i).valid := wakeupNodes(i).isValid
+    fast_wakeups(i).payload := wakeupNodes(i)(wakeupPayload)
+  }
+  if (wakeupLinks.nonEmpty) {
+    Builder(wakeupLinks)
+    wakeupNodes.tail.foreach(_.valid.removeInitAssignments())
+  } else {
+    wakeupNodes.head.build()
   }
   io_wakeup := fast_wakeups(fastWakeupLatency)
 
@@ -673,10 +689,13 @@ class FPExeUnit(val hasFDiv: Boolean = false, val hasFpiu: Boolean = false)(impl
     fpiu_resp.payload.predicated := queue.io.deq.payload.predicated
     fpiu_resp.payload.fflags     := queue.io.deq.payload.fflags
 
+    val dgenInput = new MemGen
+    dgenInput.uop := exe_uop.payload
+    dgenInput.data := ieee(exe_rs2_data).resized
     val dgen = master(Flow(new MemGen)).setName("io_dgen")
-    dgen.valid        := RegNext(exe_uop.valid && exe_uop.payload.uses_stq && !IsKilledByBranch(io_brupdate, io_kill, exe_uop.payload))
-    dgen.payload.uop  := RegNext(exe_uop.payload)
-    dgen.payload.data := RegNext(ieee(exe_rs2_data)).resized
+    dgen << FixedPipeline(exe_uop.valid && exe_uop.payload.uses_stq &&
+      !IsKilledByBranch(io_brupdate, io_kill, exe_uop.payload),
+      dgenInput, 1, holdPayload = false, resetValid = false)
     (Some(fpiu_resp), Some(dgen))
   } else {
     assert(!(exe_uop.valid && exe_uop.payload.fu_code(FC_F2I)))
