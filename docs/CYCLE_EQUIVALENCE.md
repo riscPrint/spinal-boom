@@ -16,6 +16,8 @@ EQ_MODE=record EQ_SET=quick scripts/cycle-equivalence.py
 EQ_MODE=check  EQ_SET=quick scripts/cycle-equivalence.py
 EQ_MODE=record EQ_SET=full  scripts/cycle-equivalence.py
 EQ_MODE=check  EQ_SET=full  scripts/cycle-equivalence.py
+EQ_MODE=record EQ_SET=extra scripts/cycle-equivalence.py
+EQ_MODE=check  EQ_SET=extra scripts/cycle-equivalence.py
 ```
 
 Record refuses to overwrite a golden set. Use a fresh `EQ_GOLDEN` directory for an
@@ -27,8 +29,8 @@ cases, simulation failure, timeout and any trace difference all exit nonzero.
 | Environment | Default | Meaning |
 |-------------|---------|---------|
 | `EQ_MODE` | `check` | `record` or `check` |
-| `EQ_SET` | `quick` | `quick` or `full` |
-| `EQ_PRESETS` | `small,medium,large,mega,giga` | Comma-separated presets |
+| `EQ_SET` | `quick` | `quick`, `full` or `extra` |
+| `EQ_PRESETS` | `small,medium,large,mega,giga`; for `extra`, `tapeout,alpha21264,fasttage,boom2,knobs` | Comma-separated core configs, any from `boom.sim.SimConfigs` |
 | `EQ_FILTER` | `.` | Python regex searched against `isa--NAME`, `vm--NAME`, `bench--NAME` |
 | `EQ_PARALLELISM` | `2` | Maximum concurrent preset JVMs; each preset compiles once |
 | `EQ_MEM_LATENCY` | `suite` | Existing spec timing: seeded random ISA/VM, fixed 20 for benchmarks; `random` or nonnegative N overrides every case |
@@ -57,7 +59,7 @@ with wall time and per-preset results. No dependencies are added.
 
 ## Golden files
 
-A complete set has `golden/<quick|full>/<suite|random|fixed-N>/manifest.json`, plus a
+A complete set has `golden/<quick|full|extra>/<suite|random|fixed-N>/manifest.json`, plus a
 folder `<preset>/<case>/` containing:
 
 - `case.json`: trace schema, ELF SHA-256, actual seed, memory latency and cycle limit.
@@ -100,6 +102,11 @@ Full selects exactly the 11 suite prefixes and p/v environments used by
 nine benchmark ELFs. It runs every case on every selected preset. The concrete
 case list and seeds are preserved in each golden set.
 
+Extra runs a smaller program list on five configurations the presets don't build
+(see below): the quick ISA tests in the p environment, plus `beq`, `ld_st`,
+`fence_i` and `lrsc` in v (30 ISA tests), every VM test, and the `qsort`,
+`dhrystone` and `towers` benchmarks: 34 cases per config, 170 runs.
+
 This is bounded simulation evidence, not formal equivalence or an ISA oracle.
 It does not observe every internal register, cache array, stalled TileLink cycle,
 pre-fetch-buffer uop or analog/hardware behavior. TileLink is observed at the
@@ -111,6 +118,46 @@ recorded, not silently treated as proof of complete uop coverage. Commit privile
 and trap PC/data inherit the timing conventions of the existing core trace.
 Only the chosen ELF inputs, memory timing, seed, presets, and finite run duration
 are covered. Tests do not add interrupt injection beyond BoomSim's existing platform.
+
+## Extra configurations
+
+All five presets use the TAGE-L predictor (FA2 micro-BTB, BIM, BTB, TAGE, loop) and
+leave most optional core knobs off. `src/test/scala/boom/sim/SimConfigs.scala`
+names five more configs; the gate, `RiscvTestsSpec` (`RISCV_TESTS_CONFIG`) and the
+extra set accept them. Each was checked to elaborate and pass its extra-set
+programs at `dc80150`; none needed core changes.
+
+| Config | Base | Covers |
+|--------|------|--------|
+| `tapeout` | `megaTapeout()` | Fast-TAGE BPD single-ported: GuBTB, slow BTB, `useFlops` BTB, `slow` single-ported BIM, `useFlops` dual-ported BIM, single-ported TAGE tables. `enableSlowBTBRedirect`, `enableAgenStage` (lsuWidth 2), column ALU writes (4 ALUs) with `enableALUSingleWideDispatch`, `enableBankedFPFreelist` (4 FP banks), `dcacheSinglePorted`, non-compacting LSU dispatch, slow issue-queue entries, 4-cycle imul. |
+| `alpha21264` | medium | Alpha 21264 BPD: global and local HBIM, tourney, and the local-history provider (`localHistoryNSets` 128). |
+| `fasttage` | small | Fast-TAGE BPD dual-ported (TAGE tables and slow BTB), at fetch width 4. |
+| `boom2` | small | BOOM v2 BPD (one-table gshare TAGE, BIM, BTB, no micro-BTB); `enableAgenStage` at lsuWidth 1; `enableICacheDelay` on the single-bank single-ported I-cache. |
+| `knobs` | large | FAuBTB then MicroBTB (no upstream mixin uses either), then BIM and BTB; `enableStLdForwarding`; `enableICacheDelay` on the dual-bank I-cache with `icacheSinglePorted = false`. |
+
+`icacheSinglePorted` defaults to true, so the presets already cover the
+single-ported I-cache; the dual-ported one is the alternative. Still uncovered:
+the delayed read of a single-bank dual-ported or dual-bank single-ported
+I-cache, the dual-ported I-cache without delay, and knobs outside this list
+that are off everywhere (`enableFastPNR`, `enableBPDHPMs`,
+`enableConservativeSNI`, printf/trace options, `enableBranchPrediction = false`,
+`enableSFBOpt`/`enableGHistStallRepair`/`enableBTBFastRepair`/
+`enableLoadToStoreForwarding`/`enableRasTopRepair` turned off). Adding a config
+costs one elaboration and native build per run.
+
+Measured at `dc80150` on the same machine under heavy unrelated load, with
+parallelism 2: the extra recording completed all 170 runs in 380.9 seconds after
+a one-test smoke run had built the native models (per config: `tapeout` 378 s,
+`knobs` 169 s, `alpha21264` 76 s, `boom2` 67 s, `fasttage` 48 s). Every run passed
+with zero Konata tracking mismatches; the set occupies about 204 MB. A check
+replay found zero differences in 728.2 seconds.
+
+A temporary `RegNext` on the HBIM bank's f3 `taken` response (both HBIMs of
+`alpha21264`) was caught by `EQ_PRESETS=alpha21264` with `beq`, `qsort` and
+`towers` selected. `beq` still matched; `qsort` differed from commit line 7349
+(golden cycle 10098, actual 10099) and ran 502110 instead of 443910 sampled
+cycles, and `towers` 13810 instead of 13310, all still `Pass`. After restoring
+`hbim.scala` the same check passed with zero differences.
 
 ## Reference-run observations
 

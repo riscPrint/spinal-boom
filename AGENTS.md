@@ -15,7 +15,7 @@ Run from this repository after `source env.sh`. The RISC-V toolchain is at
 | riscv-tests ISA suite | `sbt "testOnly boom.sim.RiscvTestsSpec"` | `RISCV_TESTS_FILTER`, `_CONFIG`, `_ENVS`, `_SEED`, `_VERBOSE`, `_WAVE`, `_RVFI` |
 | Directed VM tests | `tests/vm/build.sh`, then `sbt "testOnly boom.sim.VmTestsSpec"` | `VM_TESTS_VERBOSE` |
 | Benchmarks | `sbt "testOnly boom.sim.BenchmarksSpec"` | `BENCH_FILTER`, `_CONFIG`, `_SEED`, `_MEM_LATENCY`, `_MAX_CYCLES` |
-| Cycle equivalence | `EQ_MODE=record scripts/cycle-equivalence.py`, then `EQ_MODE=check scripts/cycle-equivalence.py` | `EQ_SET=quick\|full`, `EQ_PRESETS` (all five by default), `EQ_FILTER`, `EQ_PARALLELISM`, `EQ_MEM_LATENCY=suite\|random\|N`, `EQ_SEED`; see [the harness note](docs/CYCLE_EQUIVALENCE.md) |
+| Cycle equivalence | `EQ_MODE=record scripts/cycle-equivalence.py`, then `EQ_MODE=check scripts/cycle-equivalence.py` | `EQ_SET=quick\|full\|extra`, `EQ_PRESETS` (all five presets by default; the five `SimConfigs` extras for `extra`), `EQ_FILTER`, `EQ_PARALLELISM`, `EQ_MEM_LATENCY=suite\|random\|N`, `EQ_SEED`; see [the harness note](docs/CYCLE_EQUIVALENCE.md) |
 | ACT4 | `act4/build.sh ../ref/act4`, then `sbt "testOnly boom.sim.Act4Spec"` | `ACT4_FILTER`, `_RVFI`, `_VERBOSE`, `_WAVE` |
 | riscv-formal | `formal/run.sh ../ref/riscv-formal <check or -jN>` | See `formal/README.md` |
 

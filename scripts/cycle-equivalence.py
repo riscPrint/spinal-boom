@@ -20,6 +20,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("commit.tsv", "tilelink.tsv", "control.tsv", "konata.log", "result.tsv")
 PRESETS = ("small", "medium", "large", "mega", "giga")
+# Alternative predictor banks and off-by-default knobs; see boom.sim.SimConfigs.
+EXTRA_CONFIGS = ("tapeout", "alpha21264", "fasttage", "boom2", "knobs")
 # Same suites/environments/exclusions as RiscvTestsSpec at the reference revision.
 SUITES = ("rv64ui", "rv64um", "rv64ua", "rv64uf", "rv64ud", "rv64uc", "rv64mi", "rv64si", "rv64uzba", "rv64uzbb", "rv64uzbs")
 EXCLUDED = {"rv64ui-p-ma_data", "rv64ui-v-ma_data", "rv64mi-p-instret_overflow"}
@@ -33,6 +35,9 @@ QUICK = {
 }
 BENCHES = ("median", "qsort", "rsort", "towers", "vvadd", "memcpy", "multiply", "dhrystone", "spmv")
 QUICK_BENCHES = {"median", "qsort", "multiply"}
+# Extra: the quick ISA tests in the p environment, a few in v, and branchy benchmarks.
+EXTRA_V = {"beq", "ld_st", "fence_i", "lrsc"}
+EXTRA_BENCHES = {"qsort", "dhrystone", "towers"}
 SCHEMA = 1
 
 
@@ -78,19 +83,21 @@ def programs(which, expression):
                        and p.name not in EXCLUDED)
         if not names:
             raise ValueError(f"no ISA tests in {isa}")
-        if which == "quick":
+        if which in ("quick", "extra"):
             expected = {f"{s}-{e}-{t}" for s, tests in QUICK.items() for e in ("p", "v") for t in tests
-                        if not (s in ("rv64mi", "rv64si") and e == "v")}
+                        if not (s in ("rv64mi", "rv64si") and e == "v")
+                        and (which == "quick" or e == "p" or t in EXTRA_V)}
             missing = expected - set(names)
             if missing:
-                raise ValueError(f"missing quick ISA tests: {sorted(missing)}")
+                raise ValueError(f"missing {which} ISA tests: {sorted(missing)}")
             names = [n for n in names if n in expected]
         selected += [("isa--" + n, isa / n, 200000) for n in names]
         vm_names = sorted(p.stem for p in (ROOT / "tests/vm").glob("*.S"))
         if not vm_names:
             raise ValueError("no VM test sources")
         selected += [("vm--" + n, vm / n, 200000) for n in vm_names]
-        bench_names = sorted(p.stem for p in bench.glob("*.riscv")) if which == "full" else sorted(QUICK_BENCHES)
+        bench_names = (sorted(p.stem for p in bench.glob("*.riscv")) if which == "full"
+                       else sorted(EXTRA_BENCHES if which == "extra" else QUICK_BENCHES))
         if which == "full" and not set(BENCHES).issubset(bench_names):
             raise ValueError(f"missing benchmark binaries in {bench}: {sorted(set(BENCHES) - set(bench_names))}")
         selected += [("bench--" + n, bench / (n + ".riscv"), 50000000) for n in bench_names]
@@ -174,14 +181,14 @@ def main():
     os.chdir(ROOT)
     mode = os.environ.get("EQ_MODE", "check")
     which = os.environ.get("EQ_SET", "quick")
-    presets = os.environ.get("EQ_PRESETS", ",".join(PRESETS)).split(",")
+    presets = os.environ.get("EQ_PRESETS", ",".join(EXTRA_CONFIGS if which == "extra" else PRESETS)).split(",")
     workers = int(os.environ.get("EQ_PARALLELISM", "2"))
     latency = os.environ.get("EQ_MEM_LATENCY", "suite")
     base_seed = int(os.environ.get("EQ_SEED", "1"))
     assert mode in ("record", "check"), "EQ_MODE must be record or check"
-    assert which in ("quick", "full"), "EQ_SET must be quick or full"
+    assert which in ("quick", "full", "extra"), "EQ_SET must be quick, full or extra"
     assert workers > 0, "EQ_PARALLELISM must be positive"
-    assert presets and len(set(presets)) == len(presets) and all(p in PRESETS for p in presets), "invalid presets"
+    assert presets and len(set(presets)) == len(presets) and all(p in PRESETS + EXTRA_CONFIGS for p in presets), "invalid presets"
     assert latency in ("suite", "random") or int(latency) >= 0, "EQ_MEM_LATENCY must be suite, random or a nonnegative cycle count"
     if latency not in ("suite", "random"):
         latency = str(int(latency))
