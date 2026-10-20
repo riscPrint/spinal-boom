@@ -420,3 +420,17 @@ ElabSpec, BoomElabSpec, PipelineSpec and BranchPipelineSpec passed. The
 probe-disabled RiscvTestsSpec branch/jalr/fence.i smoke and VmTestsSpec passed.
 All retained gated-register names match the original extra-config RTL inventory.
 The final spec runs hold the machine-wide boom lock.
+
+
+`HoldStageLink` models a held stage whose payload is rewritten every cycle.
+Acceptance is downstream ready AND NOT flush, with no bubble collapse. Flush
+clears valid and selects the held payload; otherwise acceptance replaces valid,
+and a per-lane drain clears a held valid. Payload has no reset or enable, and
+valid reset is optional. `hold`, `selected` and `next` allow field overrides and
+a single rewrite after the hold/input selection. Its directed register-reference
+test checks invalid payloads, simultaneous controls and reset during traffic.
+`BranchPipeline.uopBoundary` provides the existing old-mask kill/new-mask rewrite
+for bare MicroOps. `writebackTap` exposes raw and kill-filtered one-cycle views;
+only the killed view clears resolved branch-mask bits. Both valids and all data
+are uninitialised and capture unconditionally. Existing fixed/branch helpers
+already cover the other step-6 chains, so no duplicate chain helper is added.
