@@ -27,6 +27,7 @@ import scala.math.ceil
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.StagePipeline
 
 import rocketchip.config.Parameters
 import rocketchip.util._
@@ -226,6 +227,11 @@ class Rob(
   val rob_head_fflags     = Vec.fill(coreWidth)(Flow(UInt(rocketchip.tile.FPConstants.FLAGS_SZ bits)))
 
   val exception_thrown = Bool()
+  val exceptionDelay = new StagePipeline
+  val EXCEPTION = exceptionDelay(0).insert(exception_thrown)
+  val exceptionThrown1 = exceptionDelay(1)(EXCEPTION)
+  val exceptionThrown2 = exceptionDelay(2)(EXCEPTION)
+  exceptionDelay.build()
 
   // exception info
   // TODO compress xcpt cause size. Most bits in the middle are zero.
@@ -314,12 +320,16 @@ class Rob(
   val rob_compact_uop_wdata = Vec(io.enq_uops.map(u => uop_to_compact(u).asBits.asUInt))
   rob_compact_uop_mem.write(rob_tail, rob_compact_uop_wdata, io.enq_valids)
   val rob_compact_uop_rdata = rob_compact_uop_mem.read(next_rob_head)
-  val rob_compact_uop_might_bypass = rob_head === RegNext(rob_tail)
+  val compactBypass = new StagePipeline
+  val TAIL = compactBypass(0).insert(rob_tail)
+  val ENQ = compactBypass(0).insert(io.enq_valids)
+  val WDATA = compactBypass(0).insert(rob_compact_uop_wdata)
+  val rob_compact_uop_might_bypass = rob_head === compactBypass(1)(TAIL)
   val rob_compact_uop_bypassed = (0 until coreWidth) map { w =>
-    val bits = Mux(rob_head === RegNext(rob_tail) && RegNext(io.enq_valids(w)),
-      RegNext(rob_compact_uop_wdata(w)),
-      Mux(rob_head === ShiftRegister(rob_tail, 2) && ShiftRegister(io.enq_valids(w), 2),
-        ShiftRegister(rob_compact_uop_wdata(w), 2),
+    val bits = Mux(rob_compact_uop_might_bypass && compactBypass(1)(ENQ)(w),
+      compactBypass(1)(WDATA)(w),
+      Mux(rob_head === compactBypass(2)(TAIL) && compactBypass(2)(ENQ)(w),
+        compactBypass(2)(WDATA)(w),
         rob_compact_uop_rdata(w)
       )
     )
@@ -327,6 +337,7 @@ class Rob(
     c.assignFromBits(bits.asBits)
     c
   }
+  compactBypass.build()
 
   for (w <- 0 until coreWidth) {
     def MatchBank(bank_idx: UInt): Bool = (bank_idx === w)
@@ -522,7 +533,7 @@ class Rob(
   // Finally, don't throw an exception if there are instructions in front of
   // it that want to commit (only throw exception when head of the bundle).
 
-  var block_commit: Bool = (rob_state =/= s_normal) && (rob_state =/= s_wait_till_empty) || RegNext(exception_thrown) || RegNext(RegNext(exception_thrown))
+  var block_commit: Bool = (rob_state =/= s_normal) && (rob_state =/= s_wait_till_empty) || exceptionThrown1 || exceptionThrown2
   var will_throw_exception: Bool = False
   var block_xcpt: Bool   = False
 
@@ -768,7 +779,7 @@ class Rob(
       rob_state := s_normal
     }
     is (s_normal) {
-      when (RegNext(RegNext(exception_thrown))) {
+      when (exceptionThrown2) {
         rob_state := s_rollback
       } otherwise {
         for (w <- 0 until coreWidth) {
@@ -784,7 +795,7 @@ class Rob(
       rob_state    := s_normal
     }
     is (s_wait_till_empty) {
-      when (RegNext(RegNext(exception_thrown))) {
+      when (exceptionThrown2) {
         rob_state := s_rollback
       } elsewhen (empty) {
         rob_state := s_normal
@@ -795,8 +806,8 @@ class Rob(
   // -----------------------------------------------
   // Outputs
 
-  io.com_load_is_at_rob_head := RegNext(rob_head_uses_ldq.at(PriorityEncoder(rob_head_vals.asUInt)) &&
-                                        !will_commit.reduce(_||_))
+  io.com_load_is_at_rob_head := FixedPipeline.delay(rob_head_uses_ldq.at(PriorityEncoder(rob_head_vals.asUInt)) &&
+                                        !will_commit.reduce(_||_), 1)
 
   override def toString: String = BoomCoreStringPrefix(
     "==ROB==",

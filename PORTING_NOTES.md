@@ -181,7 +181,7 @@ connects only payloads read downstream. Construct all consumers before calling
   method in this API.
 
 This changes the expression of the original port, not the upstream cycle contract.
-Queues, FSMs, memories, CAMs, rename tables and the ROB remain outside this work.
+Queues, FSMs, memories, CAMs, rename tables and ROB storage/state remain outside this work.
 
 `BranchKillablePipeline` uses one boundary CtrlLink and one StageLink per original
 register. Payload captures every cycle, including invalid or killed transactions;
@@ -486,3 +486,13 @@ register and the existing current-cycle FTQ PC alignment remains after it.
 The separate ROB-flush flag delays are kept at their existing sites: deduplicating
 these single flags is optional and adds no transaction-chain coverage. The
 hand-written commit-trace and RVFI observation paths are unchanged.
+
+
+ROB exception timing uses a data-only StagePipeline with one- and two-cycle
+taps, replacing the duplicate delayed exception flags. Compact-uop SRAM write
+bypass uses a separate data-only StagePipeline carrying tail, per-lane enqueue
+valids and write data through the same two delays. All bits capture every cycle
+without reset; the priority of the one-cycle match over the two-cycle match is
+unchanged. The memory itself, ROB entry arrays, head/tail/state/exception storage,
+commit scan and rollback logic stay hand-written. The output load-at-head flag
+uses an unconditional data-only delay at its original single-cycle position.
