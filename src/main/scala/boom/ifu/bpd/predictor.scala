@@ -2,6 +2,7 @@ package boom.ifu
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.{Builder, Node, StageLink}
 import rocketchip.config.Parameters
 import rocketchip.util._
 
@@ -149,33 +150,56 @@ abstract class BranchPredictorBank(implicit p: Parameters) extends BoomModule()(
 
   io.f3_meta := 0
 
-  val s0_idx       = fetchIdx(io.f0_pc)
-  val s1_idx       = RegNext(s0_idx)
-  val s2_idx       = RegNext(s1_idx)
-  val s3_idx       = RegNext(s2_idx)
+  // Fixed-flow ages: valid is an uninitialised payload, not node control.
+  val pred = Vector.tabulate(4)(i => Node().setName(s"s$i"))
+  private val predLinks = (0 until 3).map(i => StageLink(pred(i), pred(i + 1)))
+  val VALID = pred(0).insert(io.f0_valid)
+  val IDX = pred(0).insert(fetchIdx(io.f0_pc))
+  val MASK = pred(0).insert(io.f0_mask)
+  val PC = pred(0).insert(bankAlign(io.f0_pc))
+
+  val s0_idx = pred(0)(IDX)
+  val s1_idx = pred(1)(IDX)
+  val s2_idx = pred(2)(IDX)
+  val s3_idx = pred(3)(IDX)
 
   val s0_valid = io.f0_valid
-  val s1_valid = RegNext(s0_valid)
-  val s2_valid = RegNext(s1_valid)
-  val s3_valid = RegNext(s2_valid)
+  val s1_valid = pred(1)(VALID)
+  val s2_valid = pred(2)(VALID)
+  val s3_valid = pred(3)(VALID)
 
   val s0_mask = io.f0_mask
-  val s1_mask = RegNext(s0_mask)
-  val s2_mask = RegNext(s1_mask)
-  val s3_mask = RegNext(s2_mask)
+  val s1_mask = pred(1)(MASK)
+  val s2_mask = pred(2)(MASK)
+  val s3_mask = pred(3)(MASK)
 
-  val s0_pc = bankAlign(io.f0_pc)
-  val s1_pc = RegNext(s0_pc)
-  val s2_pc = RegNext(s1_pc)
+  val s0_pc = pred(0)(PC)
+  val s1_pc = pred(1)(PC)
+  val s2_pc = pred(2)(PC)
 
-  val s0_update     = io.update
+  val upd = Vector.tabulate(3)(i => Node().setName(s"u$i"))
+  private val updLinks = (0 until 2).map(i => StageLink(upd(i), upd(i + 1)))
+  val s0_update = io.update
   val s0_update_idx = fetchIdx(io.update.payload.pc)
   val s0_update_valid = io.update.valid
 
-  val s1_update     = RegNext(s0_update)
-  s1_update.payload.pc := bankAlign(s0_update.payload.pc)
-  val s1_update_idx = RegNext(s0_update_idx)
-  val s1_update_valid = RegNext(s0_update_valid)
+  val alignedUpdate = CombInit(io.update)
+  alignedUpdate.payload.pc := bankAlign(io.update.payload.pc)
+  val UPDATE = upd(0).insert(alignedUpdate)
+  val UPDATE_IDX = upd(0).insert(s0_update_idx)
+  val UPDATE_VALID = upd(0).insert(s0_update_valid)
+  val s1_update = upd(1)(UPDATE)
+  val s1_update_idx = upd(1)(UPDATE_IDX)
+  val s1_update_valid = upd(1)(UPDATE_VALID)
+
+  /** Add bank-local stage payloads at top level, never inside a hardware when. */
+  def predAt[T <: Data](value: T, from: Int, to: Int): T =
+    pred(to)(pred(from).insert(value))
+  def updAt[T <: Data](value: T, from: Int, to: Int): T =
+    upd(to)(upd(from).insert(value))
+
+  // Subclasses add payloads and consumers before these links are built.
+  afterElaboration { Builder(predLinks ++ updLinks) }
 
   /** Every predictor's inputs default to don't-care (BOOM's `preds.map(_.io := DontCare)`). */
   def defaultInputs(): Unit = {

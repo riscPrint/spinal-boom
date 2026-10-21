@@ -322,3 +322,16 @@ compares data and nacks through bank sharing, conflicts and masked writes under
 both port policies. `BoomElabSpec` also elaborates memory units with lsuWidth 1 and 2
 with `enableStLdForwarding` and `dcacheSinglePorted` enabled together. Quick and
 full checks retain the original ELF contracts and goldens, with parallelism 2.
+
+Frontend step 3: `BranchPredictorBank` carries its prediction ages 0 through 3
+and update ages 0 through 2 with fixed-flow StageLinks. Request valid and update
+valid are uninitialised payload bits, so no node valid or ready is introduced.
+The aligned update PC is selected before its register, with the unaligned s0
+update still exposed. The existing s0/s1/s2/s3 names remain available to banks;
+Builder runs in `afterElaboration` so bank-local payloads can share these ages.
+A separate update-valid payload retains the original parallel register.
+
+The bank-base commit passed quick (255 runs), extra (170 runs) and full
+(1,655 runs) against the unchanged recorded inputs with zero differences.
+ElabSpec and BoomElabSpec passed; retained gated-register names match the
+pre-change extra-config RTL inventory.
