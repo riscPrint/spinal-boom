@@ -295,3 +295,8 @@ LSU clr_bsy preserves a valid-enabled first payload register, an unconditional
 second stage and a combinational output kill. FixedPipeline supplies the isolated
 payload-holding first stage with constant ready; the second remains free-running.
 Both valids retain no reset, including during an asserted reset.
+
+The prefetcher inputs use a one-cycle unconditional FixedPipeline with no valid
+init and a separate unconditional MSHR-availability delay. The NLPrefetcher
+holding buffer, MSHR metadata wait states, meta_hazard counter, allocation
+encoder, queues and arbiters remain hand-written state.

@@ -743,8 +743,17 @@ class BoomMSHRFile(implicit p: Parameters) extends BoomModule()(p)
       PriorityEncoderOH(~sdq_val(cfg.nSDQ-1 downto 0)) & Fill(cfg.nSDQ, sdq_enq)
   }
 
-  prefetcher.io.mshr_avail    := RegNext(pri_rdy)
-  prefetcher.io.req_val       := RegNext(commit_vals.reduce(_||_))
-  prefetcher.io.req_addr      := RegNext(Mux1H(commit_vals, commit_addrs))
-  prefetcher.io.req_coh       := RegNext(Mux1H(commit_vals, commit_cohs))
+  val pfRequest = new Bundle {
+    val addr = cloneOf(prefetcher.io.req_addr)
+    val coh = cloneOf(prefetcher.io.req_coh)
+  }
+  pfRequest.addr := Mux1H(commit_vals, commit_addrs)
+  pfRequest.coh := Mux1H(commit_vals, commit_cohs)
+  val pfInput = FixedPipeline(commit_vals.reduce(_||_), pfRequest, 1,
+    holdPayload = false, resetValid = false)
+  prefetcher.io.mshr_avail := FixedPipeline.delay(pri_rdy, 1)
+  prefetcher.io.req_val := pfInput.valid
+  prefetcher.io.req_addr := pfInput.payload.addr
+  prefetcher.io.req_coh := pfInput.payload.coh
+
 }
