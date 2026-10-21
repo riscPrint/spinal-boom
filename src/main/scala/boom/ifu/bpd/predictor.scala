@@ -243,6 +243,10 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   bpdStr.append(BoomCoreStringPrefix(f"Total bpd size: ${total_memsize / 1024} KB\n"))
   override def toString: String = bpdStr.toString
 
+  // Response ages are free-running payloads, including request-valid bits.
+  val responseAges = Vector.fill(4)(Node())
+  val RESPONSE_PC = responseAges(0).insert(io.f0_req.payload.pc)
+
   val banked_lhist_providers = Seq.fill(nBanks) { if (localHistoryNSets > 0) new LocalBranchPredictorBank else new NullLocalBranchPredictorBank }
 
   if (nBanks == 1) {
@@ -253,7 +257,7 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
     banked_predictors(0).io.f0_pc    := io.f0_req.payload.pc
     banked_predictors(0).io.f0_mask  := fetchMask(io.f0_req.payload.pc).resized
 
-    banked_predictors(0).io.f1_ghist := RegNext(io.f0_req.payload.ghist.histories(0))
+    banked_predictors(0).io.f1_ghist := responseAges(1)(responseAges(0).insert(io.f0_req.payload.ghist.histories(0)))
     banked_predictors(0).io.f1_lhist := banked_lhist_providers(0).io.f1_lhist
 
     banked_predictors(0).io.resp_in(0) := new BranchPredictionBankResponse().getZero
@@ -295,7 +299,8 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
       banked_predictors(1).io.f0_pc    := io.f0_req.payload.pc
       banked_predictors(1).io.f0_mask  := fetchMask(io.f0_req.payload.pc).resized
     }
-    when (RegNext(bank(io.f0_req.payload.pc) === 0)) {
+    val BANK0 = responseAges(0).insert(bank(io.f0_req.payload.pc) === 0)
+    when (responseAges(1)(BANK0)) {
       banked_predictors(0).io.f1_ghist  := RegNext(io.f0_req.payload.ghist.histories(0))
       banked_predictors(1).io.f1_ghist  := RegNext(io.f0_req.payload.ghist.histories(1))
     } otherwise {
@@ -321,8 +326,8 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
     banked_lhist_providers(0).io.f3_fire := io.f3_fire
   } else {
     require(nBanks == 2)
-    val b0_fire = io.f3_fire && RegNext(RegNext(RegNext(banked_predictors(0).io.f0_valid)))
-    val b1_fire = io.f3_fire && RegNext(RegNext(RegNext(banked_predictors(1).io.f0_valid)))
+    val b0_fire = io.f3_fire && responseAges(3)(responseAges(0).insert(banked_predictors(0).io.f0_valid))
+    val b1_fire = io.f3_fire && responseAges(3)(responseAges(0).insert(banked_predictors(1).io.f0_valid))
     banked_predictors(0).io.f3_fire := b0_fire
     banked_predictors(1).io.f3_fire := b1_fire
 
@@ -353,9 +358,9 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
     }
   }
 
-  io.resp.f1.pc := RegNext(io.f0_req.payload.pc)
-  io.resp.f2.pc := RegNext(io.resp.f1.pc)
-  io.resp.f3.pc := RegNext(io.resp.f2.pc)
+  io.resp.f1.pc := responseAges(1)(RESPONSE_PC)
+  io.resp.f2.pc := responseAges(2)(RESPONSE_PC)
+  io.resp.f3.pc := responseAges(3)(RESPONSE_PC)
 
   // We don't care about meta from the f1 and f2 resps
   // Use the meta from the latest resp
@@ -460,6 +465,8 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
       assert(io.update.payload.br_mask(io.update.payload.cfi_idx.payload))
     }
   }
+  Builder((0 until 3).map(i => StageLink(responseAges(i), responseAges(i + 1))))
+
 }
 
 class NullBranchPredictorBank(implicit p: Parameters) extends BranchPredictorBank()(p) {

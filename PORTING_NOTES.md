@@ -369,3 +369,15 @@ target and local-history index registers remain verbatim.
 Validation for this commit: quick (255 runs) and extra (170 runs) completed with zero
 differences against the original inputs. The BoomFrontend elaboration spec passed.
 Retained gated-register names match the original extra-config RTL inventory.
+
+The predictor top now carries response PC, the single-bank F1 history,
+the two-bank selection condition and per-bank F3-fire valid qualifiers on
+four fixed-flow payload ages. No node valid, reset or ready is introduced.
+The four two-bank history registers retain their downstream enables and
+names. Composed banks remain combinational at F1, F2 and F3; no links cross
+between the FA2/BIM/BTB/TAGE/loop components.
+
+Validation for this commit: quick (255 runs) and extra (170 runs)
+completed with zero differences against the original inputs. The BoomFrontend
+elaboration spec passed. Retained gated-register names match the original
+extra-config RTL inventory, including all four two-bank history captures.
