@@ -265,3 +265,9 @@ The banked data array carries bank/index/read-grant context from s0 to s1 and
 selection/read data from s1 to s2 using valid-less StageLinks. Memory reads,
 bank arbitration and conflict nacks retain their original timing. The duplicated
 data array keeps its single memory-output registers.
+
+LSU EXE-to-MEM context uses one valid-less node chain per lane and a common
+chain for shared context. Each fired flag keeps its individual kill expression;
+uops, queue snapshots, addresses and request/kill context capture unconditionally
+without reset. Later s1_kill overrides keep their original assignment priority.
+The unused wb_ldst_forward_matches register is removed.

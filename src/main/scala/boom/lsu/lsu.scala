@@ -45,6 +45,7 @@ package boom.lsu
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline._
 import spinal.lib.bus.tilelink
 
 import rocketchip.config.Parameters
@@ -875,9 +876,21 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   io.dmem.req.payload := dmem_req
   val dmem_req_fire = widthMap(w => dmem_req(w).valid && io.dmem.req.fire)
 
+  // Mutually exclusive fired flags are payloads, not a shared node valid.
+  class MemoryContext extends Area {
+    val exe, mem, wb = Node()
+    val links = Seq(StageLink(exe, mem), StageLink(mem, wb))
+    def toMem[T <: Data](data: T): T = mem(exe.insert(data))
+    def toWb[T <: Data](data: T): T = wb(mem.insert(data))
+  }
+  val ctx = Vector.fill(lsuWidth)(new MemoryContext)
+  val ctxC = new MemoryContext
+  val mem_req_fire = widthMap(w => ctx(w).toMem(dmem_req_fire(w)))
+
   val s0_executing_loads = Vec.fill(numLdqEntries)(Bool())
   s0_executing_loads.foreach(_ := False)
   val s0_kills = Vec.fill(lsuWidth)(Bool())
+  val mem_req_fire_ok = widthMap(w => ctx(w).toMem(dmem_req_fire(w) && !s0_kills(w)))
 
   for (w <- 0 until lsuWidth) {
     dmem_req(w).valid := False
@@ -887,7 +900,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     dmem_req(w).payload.is_hella := False
 
     s0_kills(w) := False
-    io.dmem.s1_kill(w) := RegNext(s0_kills(w) && dmem_req_fire(w))
+    io.dmem.s1_kill(w) := ctx(w).toMem(s0_kills(w) && dmem_req_fire(w))
 
     when (will_fire_load_agen_exec(w)) {
       dmem_req(w).valid         := True
@@ -1031,24 +1044,24 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   //-------------------------------------------------------------
   // Note the DCache may not have accepted our request
 
-  val fired_load_agen_exec = widthMap(w => RegNext(will_fire_load_agen_exec(w) && !exe_agen_killed(w)))
-  val fired_load_agen      = widthMap(w => RegNext(will_fire_load_agen     (w) && !exe_agen_killed(w)))
-  val fired_store_agen     = widthMap(w => RegNext(will_fire_store_agen    (w) && !exe_agen_killed(w)))
-  val fired_sfence         = RegNext(will_fire_sfence)
-  val fired_release        = RegNext(will_fire_release)
-  val fired_load_retry     = widthMap(w => RegNext(will_fire_load_retry   (w) && !IsKilledByBranch(io.core.brupdate, io.core.exception, retry_queue.io.deq.payload.uop)))
-  val fired_store_retry    = widthMap(w => RegNext(will_fire_store_retry  (w) && !IsKilledByBranch(io.core.brupdate, io.core.exception, retry_queue.io.deq.payload.uop)))
-  val fired_store_commit   = widthMap(w => RegNext(will_fire_store_commit_slow(w) || will_fire_store_commit_fast(w)))
-  val fired_load_wakeup    = widthMap(w => RegNext(will_fire_load_wakeup  (w) && !IsKilledByBranch(io.core.brupdate, io.core.exception, ldq_wakeup_e.payload.uop)))
-  val fired_hella_incoming = RegNext(will_fire_hella_incoming)
-  val fired_hella_wakeup   = RegNext(will_fire_hella_wakeup)
+  val fired_load_agen_exec = widthMap(w => ctx(w).toMem(will_fire_load_agen_exec(w) && !exe_agen_killed(w)))
+  val fired_load_agen      = widthMap(w => ctx(w).toMem(will_fire_load_agen     (w) && !exe_agen_killed(w)))
+  val fired_store_agen     = widthMap(w => ctx(w).toMem(will_fire_store_agen    (w) && !exe_agen_killed(w)))
+  val fired_sfence         = widthMap(w => ctx(w).toMem(will_fire_sfence(w)))
+  val fired_release        = widthMap(w => ctx(w).toMem(will_fire_release(w)))
+  val fired_load_retry     = widthMap(w => ctx(w).toMem(will_fire_load_retry   (w) && !IsKilledByBranch(io.core.brupdate, io.core.exception, retry_queue.io.deq.payload.uop)))
+  val fired_store_retry    = widthMap(w => ctx(w).toMem(will_fire_store_retry  (w) && !IsKilledByBranch(io.core.brupdate, io.core.exception, retry_queue.io.deq.payload.uop)))
+  val fired_store_commit   = widthMap(w => ctx(w).toMem(will_fire_store_commit_slow(w) || will_fire_store_commit_fast(w)))
+  val fired_load_wakeup    = widthMap(w => ctx(w).toMem(will_fire_load_wakeup  (w) && !IsKilledByBranch(io.core.brupdate, io.core.exception, ldq_wakeup_e.payload.uop)))
+  val fired_hella_incoming = widthMap(w => ctx(w).toMem(will_fire_hella_incoming(w)))
+  val fired_hella_wakeup   = widthMap(w => ctx(w).toMem(will_fire_hella_wakeup(w)))
 
-  val mem_incoming_uop     = SafeRegNext(widthMap(w => UpdateBrMask(io.core.brupdate, agen(w).payload.uop)))
-  val mem_ldq_incoming_e   = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, io.core.exception, ldq_incoming_e(w))))
-  val mem_stq_incoming_e   = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, io.core.exception, stq_incoming_e(w))))
-  val mem_ldq_wakeup_e     = RegNext(UpdateBrMask(io.core.brupdate, io.core.exception, ldq_wakeup_e))
-  val mem_ldq_retry_e      = RegNext(UpdateBrMask(io.core.brupdate, io.core.exception, ldq_read(ldq_retry_idx)))
-  val mem_stq_retry_e      = RegNext(UpdateBrMask(io.core.brupdate, io.core.exception, stq_read(stq_retry_idx)))
+  val mem_incoming_uop     = widthMap(w => ctx(w).toMem(UpdateBrMask(io.core.brupdate, agen(w).payload.uop)))
+  val mem_ldq_incoming_e   = widthMap(w => ctx(w).toMem(UpdateBrMask(io.core.brupdate, io.core.exception, ldq_incoming_e(w))))
+  val mem_stq_incoming_e   = widthMap(w => ctx(w).toMem(UpdateBrMask(io.core.brupdate, io.core.exception, stq_incoming_e(w))))
+  val mem_ldq_wakeup_e     = ctxC.toMem(UpdateBrMask(io.core.brupdate, io.core.exception, ldq_wakeup_e))
+  val mem_ldq_retry_e      = ctxC.toMem(UpdateBrMask(io.core.brupdate, io.core.exception, ldq_read(ldq_retry_idx)))
+  val mem_stq_retry_e      = ctxC.toMem(UpdateBrMask(io.core.brupdate, io.core.exception, stq_read(stq_retry_idx)))
   val mem_ldq_e            = widthMap(w =>
                              Mux(fired_load_agen     (w) ||
                                  fired_load_agen_exec(w), mem_ldq_incoming_e(w),
@@ -1059,9 +1072,9 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
                              Mux(fired_store_agen (w), mem_stq_incoming_e(w),
                              Mux(fired_store_retry(w), mem_stq_retry_e, Flow(new STQEntry).getZero)))
 
-  val mem_tlb_miss             = RegNext(exe_tlb_miss)
-  val mem_tlb_uncacheable      = RegNext(exe_tlb_uncacheable)
-  val mem_paddr                = RegNext(widthMap(w => dmem_req(w).payload.addr))
+  val mem_tlb_miss             = widthMap(w => ctx(w).toMem(exe_tlb_miss(w)))
+  val mem_tlb_uncacheable      = widthMap(w => ctx(w).toMem(exe_tlb_uncacheable(w)))
+  val mem_paddr                = widthMap(w => ctx(w).toMem(dmem_req(w).payload.addr))
 
   // Task 1: Clr ROB busy bit
 
@@ -1116,9 +1129,13 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   // Load wakeups don't go through TLB, get it through memory
   // Load incoming and load retries go through both
 
+  val mem_release_addr = ctxC.toMem(io.dmem.release.payload.address)
+  val mem_ldq_wakeup_idx = ctxC.toMem(ldq_wakeup_idx)
+  val mem_ldq_retry_idx = ctxC.toMem(ldq_retry_idx)
+  val mem_stq_retry_idx = ctxC.toMem(stq_retry_idx)
   val lcam_addr  = widthMap(w => Mux(fired_store_agen(w) || fired_store_retry(w) || fired_load_agen(w) || fired_load_agen_exec(w),
-                                     RegNext(exe_tlb_paddr(w)).resize(coreMaxAddrBits),
-                                     Mux(fired_release(w), RegNext(io.dmem.release.payload.address).resize(coreMaxAddrBits),
+                                     ctx(w).toMem(exe_tlb_paddr(w)).resize(coreMaxAddrBits),
+                                     Mux(fired_release(w), mem_release_addr.resize(coreMaxAddrBits),
                                          mem_paddr(w))))
   val lcam_uop   = widthMap(w => Mux(do_st_search(w), mem_stq_e(w).payload.uop,
                                  Mux(do_ld_search(w), mem_ldq_e(w).payload.uop, NullMicroOp)))
@@ -1129,11 +1146,11 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   val lcam_ldq_idx  = widthMap(w =>
                       Mux(fired_load_agen     (w) ||
                           fired_load_agen_exec(w)  , mem_incoming_uop(w).ldq_idx,
-                      Mux(fired_load_wakeup  (w), SafeRegNext(ldq_wakeup_idx),
-                      Mux(fired_load_retry   (w), SafeRegNext(ldq_retry_idx), U(0, 1+ldqAddrSz bits)))))
+                      Mux(fired_load_wakeup  (w), mem_ldq_wakeup_idx,
+                      Mux(fired_load_retry   (w), mem_ldq_retry_idx, U(0, 1+ldqAddrSz bits)))))
   val lcam_stq_idx  = widthMap(w =>
                       Mux(fired_store_agen (w), mem_incoming_uop(w).stq_idx,
-                      Mux(fired_store_retry(w), SafeRegNext(stq_retry_idx), U(0, 1+stqAddrSz bits))))
+                      Mux(fired_store_retry(w), mem_stq_retry_idx, U(0, 1+stqAddrSz bits))))
 
   // is_younger_mask(i) == 1 means i is younger than ldq_idx (ldq_idx is older than i)
   val lcam_younger_load_mask = Vec.fill(lsuWidth)(Vec.fill(numLdqEntries)(Bool()))
@@ -1159,10 +1176,9 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   // Mask of stores we can forward to
   val stld_prs2_matches    = Vec.fill(lsuWidth)(UInt(numStqEntries bits))
 
-  val s1_executing_loads = RegNext(s0_executing_loads)
+  val s1_executing_loads = ctxC.toMem(s0_executing_loads)
   val s1_set_execute     = CombInit(s1_executing_loads)
 
-  val wb_ldst_forward_matches  = RegNext(ldst_forward_matches)
   val wb_ldst_forward_valid    = Vec.fill(lsuWidth)(Bool())
   val wb_ldst_forward_e        = widthMap(w => RegNext(UpdateBrMask(io.core.brupdate, ldq_read(lcam_ldq_idx(w)).payload)))
   val wb_ldst_forward_ldq_idx  = SafeRegNext(lcam_ldq_idx)
@@ -1246,7 +1262,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
           // can also forward from the next cycle
           when (!(l_executed && (l_succeeded || l_will_succeed))) {
             s1_set_execute.write(lcam_ldq_idx(w))(_ := False)
-            when (RegNext(dmem_req_fire(w) && !s0_kills(w)) && !fired_load_agen(w)) {
+            when (mem_req_fire_ok(w) && !fired_load_agen(w)) {
               io.dmem.s1_kill(w)               := True
             }
             kill_forward(w)                    := True
@@ -1270,7 +1286,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
             nack_mask_overlap                     &&
             IsOlderLSU(io.dmem.nack(wi).payload.uop.ldq_idx, lcam_ldq_idx(w), ldq_head)) {
         s1_set_execute.write(lcam_ldq_idx(w))(_ := False)
-        when (RegNext(dmem_req_fire(w) && !s0_kills(w)) && !fired_load_agen(w)) {
+        when (mem_req_fire_ok(w) && !fired_load_agen(w)) {
           io.dmem.s1_kill(w) := True
         }
         kill_forward(w) := True
@@ -1353,7 +1369,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     val has_older_amo = (stq_amos.asUInt & age_matches(w).asUInt) =/= 0
     //tianrui: this is the place of the bug
     when (do_ld_search(w) && (has_older_amo || (ldst_addr_matches(w) =/= 0))) {
-      when (RegNext(dmem_req_fire(w) && !s0_kills(w)) && !fired_load_agen(w)) {
+      when (mem_req_fire_ok(w) && !fired_load_agen(w)) {
         io.dmem.s1_kill(w)               := True
       }
       s1_set_execute.write(lcam_ldq_idx(w))(_ := False)
@@ -1415,7 +1431,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   for (w <- 0 until lsuWidth) {
     io.core.clr_unsafe(w).valid := (
       RegNext(do_st_search(w)) ||
-      (!io.dmem.nack(w).valid && RegNext(do_ld_search(w) && !fired_load_agen(w) && !io.dmem.s1_kill(w) && RegNext(dmem_req_fire(w))))
+      (!io.dmem.nack(w).valid && RegNext(do_ld_search(w) && !fired_load_agen(w) && !io.dmem.s1_kill(w) && mem_req_fire(w)))
     ) && !RegNext(failed_load)
     io.core.clr_unsafe(w).payload := RegNext(lcam_uop(w).rob_idx)
   }
@@ -1450,7 +1466,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   for (w <- 0 until lsuWidth) {
     if (!enableFastLoadUse) {
       wakeupArbs(w).io.in(1).valid := (fired_load_agen_exec(w)      &&
-                                       RegNext(dmem_req_fire(w))    &&
+                                       mem_req_fire(w)    &&
                                        !io.dmem.s1_nack_advisory(w) &&
                                        !mem_incoming_uop(w).fp_val)
       wakeupArbs(w).io.in(1).payload.uop := mem_incoming_uop(w)
@@ -1913,6 +1929,8 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
       ldq_valid(i)           := False
     }
   }
+  Builder(ctx.flatMap(_.links) ++ ctxC.links)
+
 }
 
 /**
