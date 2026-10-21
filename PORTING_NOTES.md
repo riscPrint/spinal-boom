@@ -271,3 +271,8 @@ chain for shared context. Each fired flag keeps its individual kill expression;
 uops, queue snapshots, addresses and request/kill context capture unconditionally
 without reset. Later s1_kill overrides keep their original assignment priority.
 The unused wb_ldst_forward_matches register is removed.
+
+LSU translated exceptions use per-lane branch-killed stages with no valid init.
+The ROB lxcpt report keeps its reset-valid stage plus the original combinational
+output kill. Only the input boundary updates the mask; exception selection and
+oldest selection remain combinational.

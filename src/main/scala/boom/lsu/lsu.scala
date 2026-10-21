@@ -790,23 +790,34 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
                                                       (exe_tlb_uop(w).uses_stq && bkptu(w).io.xcpt_st && !exe_tlb_uop(w).is_fence)))
 
   // TODO check for xcpt_if and verify that never happens on non-speculative instructions.
-  val mem_xcpt_valids = RegNext(widthMap(w =>
-                     exe_tlb_valid(w) &&
-                     (pf_ld(w) || pf_st(w) || ae_ld(w) || ae_st(w) || ma_ld(w) || ma_st(w) || dbg_bp(w) || bp(w)) &&
-                     !IsKilledByBranch(io.core.brupdate, io.core.exception, exe_tlb_uop(w))))
-  val mem_xcpt_uops   = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, exe_tlb_uop(w))))
+  val XUOP = Payload(new MicroOp)
+  val XCAUSE = Payload(cloneOf(mem_xcpt_cause))
+  val XVADDR = Payload(cloneOf(exe_tlb_vaddr(0)))
   def cause(c: Int): UInt = U(c, mem_xcpt_cause.getWidth bits)
-  val mem_xcpt_causes = RegNext(widthMap(w =>
-    Mux(dbg_bp(w), cause(rocket.CSR.debugTriggerCause),
-    Mux(bp    (w), cause(rocket.Causes.breakpoint),
-    Mux(ma_st (w), cause(rocket.Causes.misaligned_store),
-    Mux(ma_ld (w), cause(rocket.Causes.misaligned_load),
-    Mux(pf_st (w), cause(rocket.Causes.store_page_fault),
-    Mux(pf_ld (w), cause(rocket.Causes.load_page_fault),
-    Mux(ae_st (w), cause(rocket.Causes.store_access),
-    Mux(ae_ld (w), cause(rocket.Causes.load_access), cause(0)))))))))))
-
-  val mem_xcpt_vaddrs = RegNext(exe_tlb_vaddr)
+  val xcpt = for (w <- 0 until lsuWidth) yield new Area {
+    val x0, x0k, x1 = Node()
+    x0.valid := exe_tlb_valid(w) &&
+      (pf_ld(w) || pf_st(w) || ae_ld(w) || ae_st(w) || ma_ld(w) || ma_st(w) || dbg_bp(w) || bp(w))
+    x0(XUOP) := exe_tlb_uop(w)
+    x0(XCAUSE) :=
+      Mux(dbg_bp(w), cause(rocket.CSR.debugTriggerCause),
+      Mux(bp    (w), cause(rocket.Causes.breakpoint),
+      Mux(ma_st (w), cause(rocket.Causes.misaligned_store),
+      Mux(ma_ld (w), cause(rocket.Causes.misaligned_load),
+      Mux(pf_st (w), cause(rocket.Causes.store_page_fault),
+      Mux(pf_ld (w), cause(rocket.Causes.load_page_fault),
+      Mux(ae_st (w), cause(rocket.Causes.store_access),
+      Mux(ae_ld (w), cause(rocket.Causes.load_access), cause(0)))))))))
+    x0(XVADDR) := exe_tlb_vaddr(w)
+    val kill = CtrlLink(x0, x0k)
+    kill.terminateWhen(IsKilledByBranch(io.core.brupdate, io.core.exception, x0(XUOP)))
+    kill.bypass(XUOP) := UpdateBrMask(io.core.brupdate, x0(XUOP))
+    val links = Seq(kill, StageLink(x0k, x1))
+  }
+  val mem_xcpt_valids = widthMap(w => xcpt(w).x1.isValid)
+  val mem_xcpt_uops = widthMap(w => xcpt(w).x1(XUOP))
+  val mem_xcpt_causes = widthMap(w => xcpt(w).x1(XCAUSE))
+  val mem_xcpt_vaddrs = widthMap(w => xcpt(w).x1(XVADDR))
 
   for (w <- 0 until lsuWidth) {
     assert (!(dtlb.io.req(w).valid && exe_tlb_uop(w).is_fence), "Fence is pretending to talk to the TLB")
@@ -1439,8 +1450,6 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   // one exception port, but multiple causes!
   // - 1) the incoming store-address finds a faulting load (it is by definition younger)
   // - 2) the incoming load or store address is excepting. It must be older and thus takes precedent.
-  val r_xcpt_valid = Reg(Bool()) init False
-  val r_xcpt       = Reg(new Exception)
 
   val ld_xcpt_valid = (ldq_order_fail.asUInt & ldq_valid.asUInt) =/= 0
 
@@ -1452,14 +1461,26 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
 
   val xcpt_uop = Mux(use_mem_xcpt, mem_xcpt_uop, ld_xcpt_uop)
 
-  r_xcpt_valid := (ld_xcpt_valid || mem_xcpt_valid) && !IsKilledByBranch(io.core.brupdate, io.core.exception, xcpt_uop)
-  r_xcpt.uop         := xcpt_uop
-  r_xcpt.uop.br_mask := GetNewBrMask(io.core.brupdate, xcpt_uop)
-  r_xcpt.cause       := Mux(use_mem_xcpt, mem_xcpt_cause, U(MINI_EXCEPTION_MEM_ORDERING.litValue, mem_xcpt_cause.getWidth bits))
-  r_xcpt.badvaddr    := mem_xcpt_vaddr.resized // TODO is there another register we can use instead?
-
-  io.core.lxcpt.valid   := r_xcpt_valid && !IsKilledByBranch(io.core.brupdate, io.core.exception, r_xcpt.uop)
-  io.core.lxcpt.payload := r_xcpt
+  val XCPT = Payload(new Exception)
+  val report = new Area {
+    val e0, e0k, e1, e1d = Node()
+    e0.valid := ld_xcpt_valid || mem_xcpt_valid
+    e0(XCPT).uop := xcpt_uop
+    e0(XCPT).cause := Mux(use_mem_xcpt, mem_xcpt_cause,
+      U(MINI_EXCEPTION_MEM_ORDERING.litValue, mem_xcpt_cause.getWidth bits))
+    e0(XCPT).badvaddr := mem_xcpt_vaddr.resized
+    val inputKill = CtrlLink(e0, e0k)
+    inputKill.terminateWhen(IsKilledByBranch(io.core.brupdate, io.core.exception, e0(XCPT).uop))
+    val updated = inputKill.bypass(XCPT)
+    updated := e0(XCPT)
+    updated.uop.br_mask := GetNewBrMask(io.core.brupdate, e0(XCPT).uop)
+    val stage = StageLink(e0k, e1)
+    val outputKill = CtrlLink(e1, e1d)
+    outputKill.terminateWhen(IsKilledByBranch(io.core.brupdate, io.core.exception, e1(XCPT).uop))
+    val links = Seq(inputKill, stage, outputKill)
+  }
+  io.core.lxcpt.valid := report.e1d.isValid
+  io.core.lxcpt.payload := report.e1d(XCPT)
 
   // Task 4: Speculatively wakeup loads 1 cycle before they come back
   // if loadUseDelay == 5
@@ -1929,7 +1950,8 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
       ldq_valid(i)           := False
     }
   }
-  Builder(ctx.flatMap(_.links) ++ ctxC.links)
+  Builder(ctx.flatMap(_.links) ++ ctxC.links ++ xcpt.flatMap(_.links) ++ report.links)
+  xcpt.foreach(_.x1.valid.removeInitAssignments())
 
 }
 
