@@ -300,3 +300,25 @@ The prefetcher inputs use a one-cycle unconditional FixedPipeline with no valid
 init and a separate unconditional MSHR-availability delay. The NLPrefetcher
 holding buffer, MSHR metadata wait states, meta_hazard counter, allocation
 encoder, queues and arbiters remain hand-written state.
+
+The PTW L2 lookup uses two fixed stages without valid init. Its s1 SRAM data,
+valid-way and global-way vectors enter at s1 and capture into s2 only when s1
+valid is true. Constant ready and withoutCollapse preserve both bubble timing
+and payload hold. RAMs, replacement/valid state, pte_hit/l2_refill pulse state and
+r_valid_vec_q/r_l2_plru_way remain unchanged. The optional standalone PTW memory
+response delay remains hand-written: its uncached-response override also writes
+the registers, so replacing it with an output Flow would change that behavior.
+
+The optional writeback-unit read tags remain hand-written. Both stages have an
+FSM-dependent common enable and explicit first-stage clearing on no request;
+using ready as that FSM enable would obscure the existing six assignments.
+HellaCacheArbiter's priority-written requester IDs remain unchanged; BOOM uses
+one requester and does not elaborate the multi-requester branch. LSU block-load
+masks, store-needs-order delays, registered encoders, hella FSM, queue/CAM state
+and ForwardingAgeLogic also retain their hand-written implementations.
+
+`MemoryPipelineSpec` retains the e101625 banked array as a test reference and
+compares data and nacks through bank sharing, conflicts and masked writes under
+both port policies. `BoomElabSpec` also elaborates memory units with lsuWidth 1 and 2
+with `enableStLdForwarding` and `dcacheSinglePorted` enabled together. Quick and
+full checks retain the original ELF contracts and goldens, with parallelism 2.

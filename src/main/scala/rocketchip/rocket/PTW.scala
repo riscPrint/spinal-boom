@@ -5,6 +5,7 @@ package rocketchip.rocket
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline._
 import rocketchip.config.Parameters
 import rocketchip.tile._
 import rocketchip.util._
@@ -412,14 +413,21 @@ class PTW(n: Int)(implicit p: Parameters) extends CoreModule()(p) {
 
     val s0_valid = !l2_refill && arb.io.out.fire
     val s0_suitable = arb.io.out.payload.bits.vstage1 === arb.io.out.payload.bits.stage2 && !arb.io.out.payload.bits.need_gpa
-    val s1_valid = RegNext(s0_valid && s0_suitable && arb.io.out.payload.valid)
-    val s2_valid = RegNext(s1_valid)
+    val p0, p1, p2 = Node()
+    p0.valid := s0_valid && s0_suitable && arb.io.out.payload.valid
+    // Constant ready enables valid-held payloads without stalls or bubble collapse.
+    p2.ready := True
+    val s1_valid = p1.isValid
+    val s2_valid = p2.isValid
     // read from tlb idx
     val s1_rdata_flat = ram.readSyncChisel(arb.io.out.payload.bits.addr(idxBits - 1 downto 0), s0_valid)
     val s1_rdata = (0 until nWays).map(w => s1_rdata_flat(w * wordW, wordW bits).asUInt)
-    val s2_rdata = s1_rdata.map(s1_rdway => code.decode(RegNextWhen(s1_rdway, s1_valid)))
-    val s2_valid_vec = RegNextWhen(r_valid_vec, s1_valid)
-    val s2_g_vec = RegNextWhen(Vec(g.map(_(r_idx))), s1_valid)
+    val RDATA = p1.insert(Vec(s1_rdata))
+    val VALID_VEC = p1.insert(r_valid_vec)
+    val GLOBAL_VEC = p1.insert(Vec(g.map(_(r_idx))))
+    val s2_rdata = p2(RDATA).map(code.decode)
+    val s2_valid_vec = p2(VALID_VEC)
+    val s2_g_vec = p2(GLOBAL_VEC)
     val s2_error = (0 until nWays).map(way => s2_valid_vec(way) && s2_rdata(way).error).orR
     when(s2_valid && s2_error) { valid.foreach { _ := 0 } }
     // decode
@@ -447,6 +455,9 @@ class PTW(n: Int)(implicit p: Parameters) extends CoreModule()(p) {
     s2_pte.reserved_for_future := 0
     s2_pte.reserved_for_software := 0
 
+    Builder(Seq(StageLink(p0, p1).withoutCollapse().withPayloadHold(),
+      StageLink(p1, p2).withoutCollapse().withPayloadHold()))
+    Seq(p1, p2).foreach(_.valid.removeInitAssignments())
     (s2_hit, s2_error, s2_pte)
   }
 
