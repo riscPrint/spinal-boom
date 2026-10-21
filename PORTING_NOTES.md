@@ -284,3 +284,9 @@ check and the nested EXE-to-MEM request-fire delay. Store-to-load forwarding
 shares the existing WB load index and stages its store index/valid only when
 enabled. Separate elaboration covers that flag with single-ported duplicated
 and banked data arrays, since default golden presets do not cover those flags.
+
+LSU speculative wakeups use two branch boundaries, each followed by a StageLink.
+Slow wakeups and integer responses use one such delay when fast load use is off.
+All these valid and payload registers remain uninitialised and free-running;
+there is no extra output kill. A local branchDelay helper builds each complete
+Flow chain, avoiding a shared util change.

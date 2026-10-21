@@ -1518,6 +1518,18 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
 
   // Handle Memory Responses and nacks
   //----------------------------------
+  // A local free-running branch boundary preserves the original no-reset Flow delays.
+  def branchDelay[T <: Data with HasBoomUOP](input: Flow[T]): Flow[T] = {
+    val up, killed, down = Node()
+    val payload = up.insert(input.payload)
+    up.valid := input.valid
+    val boundary = BranchPipeline.boundary(up, killed, payload, io.core.brupdate, io.core.exception)
+    val result = down.toFlow(_(payload))
+    Builder(Seq(boundary, StageLink(killed, down)))
+    down.valid.removeInitAssignments()
+    result
+  }
+
   val iresp = Vec.fill(lsuWidth)(Flow(new ExeUnitResp(xLen)))
   val fresp = Vec.fill(lsuWidth)(Flow(new ExeUnitResp(xLen)))
 
@@ -1526,8 +1538,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     iresp(w).payload.assignDontCare()
     fresp(w).valid := False
     fresp(w).payload.assignDontCare()
-    io.core.iresp(w) := (if (enableFastLoadUse) iresp(w) else RegNext(
-      UpdateBrMask(io.core.brupdate, io.core.exception, iresp(w))))
+    io.core.iresp(w) := (if (enableFastLoadUse) iresp(w) else branchDelay(iresp(w)))
     io.core.fresp(w) := fresp(w)
   }
 
@@ -1541,13 +1552,11 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   val dmem_resp_fired = Vec.fill(lsuWidth)(Bool())
   dmem_resp_fired.foreach(_ := False)
   for (w <- 0 until lsuWidth) {
-    val w1 = Reg(Flow(new Wakeup))
-    w1.valid   := wakeupArbs(w).io.in(1).fire && !IsKilledByBranch(io.core.brupdate, io.core.exception, wakeupArbs(w).io.in(1).payload)
-    w1.payload := UpdateBrMask(io.core.brupdate, wakeupArbs(w).io.in(1).payload)
-
-    val w2 = Reg(Flow(new Wakeup))
-    w2.valid   := w1.valid && !IsKilledByBranch(io.core.brupdate, io.core.exception, w1.payload)
-    w2.payload := UpdateBrMask(io.core.brupdate, w1.payload)
+    val input = Flow(new Wakeup)
+    input.valid := wakeupArbs(w).io.in(1).fire
+    input.payload := wakeupArbs(w).io.in(1).payload
+    val w1 = branchDelay(input)
+    val w2 = branchDelay(w1)
 
     spec_wakeups(w).valid   := w2.valid
     spec_wakeups(w).payload := w2.payload
@@ -1685,8 +1694,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     // Do wakeups
     wakeupArbs(w).io.in(0).valid := False
     wakeupArbs(w).io.in(0).payload.assignDontCare()
-    slow_wakeups(w) := (if (enableFastLoadUse) wb_slow_wakeups(w) else RegNext(UpdateBrMask(
-      io.core.brupdate, io.core.exception, wb_slow_wakeups(w))))
+    slow_wakeups(w) := (if (enableFastLoadUse) wb_slow_wakeups(w) else branchDelay(wb_slow_wakeups(w)))
     when (slow_wakeups(w).valid) {
       when (spec_wakeups(w).valid) { // Do nothing, since the slow wakeup matches a earlier speculative wakeup
         assert(slow_wakeups(w).payload.uop.ldq_idx === spec_wakeups(w).payload.uop.ldq_idx)
