@@ -255,3 +255,8 @@ misses still nack and replay. s1 valid retains its false init, s2 valid has none
 and payloads capture every cycle. Shared request type and way context has no
 valid. Metadata, replacement, response and nack tags share the matching stage
 payloads. Probe-facing s2_valid/s2_hit/s2_nack/s2_type remain accessible.
+
+The D-cache s3-to-s5 store/AMO history uses three unconditional StageLinks
+without valid init. A CtrlLink bypass replaces only s3 request data with the AMO
+result before the s4 register. The ALU reads the original s3 data register; the
+store write and all later bypass taps see the overridden value.

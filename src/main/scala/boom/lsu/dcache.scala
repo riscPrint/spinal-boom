@@ -935,11 +935,23 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   io.lsu.ll_resp << mshrs.io.resp
 
   // Store/amo hits
-  val s3_req   = new BoomDCacheReq
-  s3_req := RegNext(s2_req(0))
-  val s3_valid = RegNext(s2_valid(0) && s2_hit(0) && isWrite(s2_req(0).uop.mem_cmd) &&
-                         !s2_sc_fail && !(s2_send_nack(0) && s2_nack(0)))
-  val s3_data_word = RegNext(s2_data_word(0))
+  val DATA_WORD = Payload(cloneOf(s2_data_word(0)))
+  val store = new Area {
+    val t2, t3, t3d, t4, t5 = Node()
+    t2.valid := s2_valid(0) && s2_hit(0) && isWrite(s2_req(0).uop.mem_cmd) &&
+      !s2_sc_fail && !(s2_send_nack(0) && s2_nack(0))
+    t2(REQ) := s2_req(0)
+    t2(DATA_WORD) := s2_data_word(0)
+    t2(TAG_WAY) := s2_tag_match_way(0)
+    val l23 = StageLink(t2, t3)
+    val amo = CtrlLink(t3, t3d)
+    val updated = amo.bypass(REQ)
+    updated := t3(REQ)
+    val links = Seq(l23, amo, StageLink(t3d, t4), StageLink(t4, t5))
+  }
+  val s3_req = store.t3d(REQ)
+  val s3_valid = store.t3d.isValid
+  val s3_data_word = store.t3(DATA_WORD)
   for (w <- 1 until lsuWidth) {
     assert(!(s2_valid(w) && s2_hit(w) && isWrite(s2_req(w).uop.mem_cmd) &&
                          !s2_sc_fail && !(s2_send_nack(w) && s2_nack(w))),
@@ -947,10 +959,10 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   }
 
   // For bypassing
-  val s4_req   = RegNext(s3_req)
-  val s4_valid = RegNext(s3_valid)
-  val s5_req   = RegNext(s4_req)
-  val s5_valid = RegNext(s4_valid)
+  val s4_req   = store.t4(REQ)
+  val s4_valid = store.t4.isValid
+  val s5_req   = store.t5(REQ)
+  val s5_valid = store.t5.isValid
 
   val s3_bypass = widthMap(w => s3_valid && ((s2_req(w).addr >> wordOffBits) === (s3_req.addr >> wordOffBits)))
   val s4_bypass = widthMap(w => s4_valid && ((s2_req(w).addr >> wordOffBits) === (s4_req.addr >> wordOffBits)))
@@ -967,10 +979,10 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   amoalu.io.mask := new StoreGen(s3_req.uop.mem_size, s3_req.addr, U(0), xLen/8).mask
   amoalu.io.cmd  := s3_req.uop.mem_cmd
   amoalu.io.lhs  := s3_data_word.resized
-  amoalu.io.rhs  := RegNext(s2_req(0).data)
+  amoalu.io.rhs  := store.t3(REQ).data
 
-  s3_req.data := amoalu.io.out
-  val s3_way   = RegNext(s2_tag_match_way(0))
+  store.updated.data := amoalu.io.out
+  val s3_way   = store.t3(TAG_WAY)
 
   dataWriteArb.io.in(0).valid           := s3_valid
   dataWriteArb.io.in(0).payload.addr    := s3_req.addr.resized
@@ -979,7 +991,8 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   dataWriteArb.io.in(0).payload.way_en  := s3_way
 
   io.lsu.ordered := mshrs.io.fence_rdy && !s1_valid.reduce(_||_) && !s2_valid.reduce(_||_)
-  Builder(lane.flatMap(_.links) ++ common.links)
+  Builder(lane.flatMap(_.links) ++ common.links ++ store.links)
+  Seq(store.t3, store.t4, store.t5).foreach(_.valid.removeInitAssignments())
   lane.foreach(_.s2.valid.removeInitAssignments())
 
 }
