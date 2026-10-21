@@ -433,6 +433,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     (RegNext(dec_valids(i) && dec_uops(i).is_jalr && csr.io.status.debug))
   }.reduce(_||_)
 
+  val csr_evec_delayed = FixedPipeline.delay(csr.io.evec, 3)
+
   // TODO FIX THIS HACK
   // The below code works because of two quirks with the flush mechanism
   //  1 ) All flush_on_commit instructions are also is_unique,
@@ -454,7 +456,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     io.ifu.redirect_ghist := new_ghist
     when (FlushTypes.useCsrEvec(flush_typ)) {
       io.ifu.redirect_pc  := Mux(flush_typ === FlushTypes.eret,
-                                 ShiftRegister(csr.io.evec, 3),
+                                 csr_evec_delayed,
                                  csr.io.evec)
     } otherwise {
       val flush_pc = (AlignPCToBoundary(io.ifu.rrd_ftq_resps(0).pc, icBlockBytes)
@@ -1113,15 +1115,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
 
   // Extra I/O
   // Delay retire/exception 1 cycle
-  csr.io.retire    := RegNext(PopCount(rob.io.commit.arch_valids)).resized
-  csr.io.exception := RegNext(rob.io.com_xcpt.valid)
+  val committed_exception = FixedPipeline(rob.io.com_xcpt.valid, rob.io.com_xcpt.payload,
+    1, holdPayload = false, resetValid = false)
+  csr.io.retire    := FixedPipeline.delay(PopCount(rob.io.commit.arch_valids), 1).resized
+  csr.io.exception := committed_exception.valid
   // csr.io.pc used for setting EPC during exception or CSR.io.trace.
 
   csr.io.pc        := (AlignPCToBoundary(io.ifu.com_pc, icBlockBytes)
-                     + RegNext(rob.io.com_xcpt.payload.pc_lob).resize(vaddrBitsExtended)
-                     - Mux(RegNext(rob.io.com_xcpt.payload.edge_inst), U(2, vaddrBitsExtended bits), U(0, vaddrBitsExtended bits)))
+                     + committed_exception.payload.pc_lob.resize(vaddrBitsExtended)
+                     - Mux(committed_exception.payload.edge_inst, U(2, vaddrBitsExtended bits), U(0, vaddrBitsExtended bits)))
   // Cause not valid for for CALL or BREAKPOINTs (CSRFile will override it).
-  csr.io.cause     := RegNext(rob.io.com_xcpt.payload.cause)
+  csr.io.cause     := committed_exception.payload.cause
 
   val tval_valid = csr.io.exception &&
     csr.io.cause.isOneOf(Seq(
@@ -1149,7 +1153,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     }
 
   csr.io.tval := Mux(tval_valid,
-    RegNext(encodeVirtualAddress(rob.io.com_xcpt.payload.badvaddr, rob.io.com_xcpt.payload.badvaddr)), U(0, vaddrBitsExtended bits))
+    FixedPipeline.delay(encodeVirtualAddress(rob.io.com_xcpt.payload.badvaddr, rob.io.com_xcpt.payload.badvaddr), 1), U(0, vaddrBitsExtended bits))
 
   // reading requires serializing the entire pipeline
   csr.io.fcsr_flags.valid   := rob.io.commit.fflags.valid

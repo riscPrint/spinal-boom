@@ -476,3 +476,13 @@ Port zero feeds the long-latency arbiter from the killed, mask-updated view;
 ports one and above feed the FP register file from the raw view and ROB/wakeup
 from the killed view. Recoding uses the delayed data and mem_size, with no new
 output kill or backpressure. The extra-port path exists only on mega and giga.
+
+
+The core's three-cycle CSR exception-vector delay uses data-only StageLinks via
+`FixedPipeline.delay`. Commit-to-CSR exception valid/pc/cause share an
+unconditional one-cycle flow without reset; retire and encoded trap-value delays
+are unconditional data-only stages. Encoding remains before the trap-value
+register and the existing current-cycle FTQ PC alignment remains after it.
+The separate ROB-flush flag delays are kept at their existing sites: deduplicating
+these single flags is optional and adds no transaction-chain coverage. The
+hand-written commit-trace and RVFI observation paths are unchanged.
