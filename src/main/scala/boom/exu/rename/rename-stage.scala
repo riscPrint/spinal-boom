@@ -23,6 +23,7 @@ package boom.exu
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.{Builder, Node, Payload}
 
 import rocketchip.util._
 import rocketchip.config.Parameters
@@ -92,34 +93,33 @@ abstract class AbstractRenameStage(
 
   ren2_br_tags(0).valid := False
   ren2_br_tags(0).payload.assignDontCare()
-  for (w <- 0 until plWidth) {
-    val r_valid  = Reg(Bool()) init False
-    val r_uop    = Reg(new MicroOp)
-    val next_uop = new MicroOp
-
-    next_uop := r_uop
-
-    when (io.kill) {
-      r_valid := False
-    } elsewhen (ren2_ready) {
-      r_valid := ren1_fire(w)
-      next_uop := ren1_uops(w)
-    } otherwise {
-      r_valid := r_valid && !ren2_fire(w) // clear bit if uop gets dispatched
-      next_uop := r_uop
-    }
+  val UOP = Payload(new MicroOp)
+  val ren1 = Vector.fill(plWidth)(Node())
+  val ren2 = Vector.fill(plWidth)(Node())
+  val ren2Links = (0 until plWidth).map { w =>
+    val link = new HoldStageLink(ren1(w), ren2(w))
+    ren1(w).valid := ren1_fire(w)
+    ren1(w)(UOP) := ren1_uops(w)
+    ren2(w).ready := ren2_ready
+    link.flushWhen(io.kill)
+    link.drainWhen(ren2_fire(w))
+    // Keep this rewrite in the abstract constructor: RenameStage.int is still false.
+    link.next(UOP) := GetNewUopAndBrMask(
+      BypassAllocations(link.selected(UOP), ren2_uops, ren2_alloc_fire), io.brupdate)
+    val r_valid = ren2(w).isValid
+    val r_uop = ren2(w)(UOP)
 
     assert(!(r_valid && r_uop.lrs1_rtype === RT_FIX && r_uop.lrs1 === 0))
     assert(!(r_valid && r_uop.lrs2_rtype === RT_FIX && r_uop.lrs2 === 0))
-
-    r_uop := GetNewUopAndBrMask(BypassAllocations(next_uop, ren2_uops, ren2_alloc_fire), io.brupdate)
 
     ren2_valids(w) := r_valid
     ren2_uops(w)   := r_uop
 
     ren2_br_tags(w+1).valid   := ren2_fire(w) && ren2_uops(w).allocate_brtag
     ren2_br_tags(w+1).payload := ren2_uops(w).br_tag
+    link
   }
+  Builder(ren2Links)
 
   //-------------------------------------------------------------
   // Outputs

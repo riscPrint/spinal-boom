@@ -434,3 +434,13 @@ for bare MicroOps. `writebackTap` exposes raw and kill-filtered one-cycle views;
 only the killed view clears resolved branch-mask bits. Both valids and all data
 are uninitialised and capture unconditionally. Existing fixed/branch helpers
 already cover the other step-6 chains, so no duplicate chain helper is added.
+
+
+All four rename-stage variants use a per-lane `HoldStageLink` at REN1 to REN2.
+The common dispatch-ready drives acceptance without bubble collapse. Kill takes
+priority over ready, selects the held uop for rewriting and clears valid; partial
+dispatch drains only its lane while stalled. Valid still resets false; every uop
+captures every cycle without reset. Allocation bypass and branch-mask rewriting
+remain after the hold/input mux, in the abstract constructor, preserving the
+existing `RenameStage.int` construction-order quirk. Rename tables, freelists,
+busy tables and predicate history remain hand-written state.
