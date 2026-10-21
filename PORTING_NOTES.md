@@ -290,3 +290,8 @@ Slow wakeups and integer responses use one such delay when fast load use is off.
 All these valid and payload registers remain uninitialised and free-running;
 there is no extra output kill. A local branchDelay helper builds each complete
 Flow chain, avoiding a shared util change.
+
+LSU clr_bsy preserves a valid-enabled first payload register, an unconditional
+second stage and a combinational output kill. FixedPipeline supplies the isolated
+payload-holding first stage with constant ready; the second remains free-running.
+Both valids retain no reset, including during an asserted reset.

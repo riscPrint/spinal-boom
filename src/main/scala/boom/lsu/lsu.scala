@@ -1097,14 +1097,23 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   for (i <- 0 until coreWidth) {
     // Delay store clearing 1 extra cycle, as the store clear can't occur
     // too quickly before an order fail caused by this store propagates to ROB
-    val clr_valid = Reg(Bool())
-    clr_valid    := False
-    val clr_uop   = Reg(new MicroOp)
-
-    val clr_valid_1 = RegNext(clr_valid && !IsKilledByBranch(io.core.brupdate, io.core.exception, clr_uop))
-    val clr_uop_1   = RegNext(UpdateBrMask(io.core.brupdate, clr_uop))
+    val c1, c1b, c2, c2d = Node()
+    val clr_valid = Bool()
+    clr_valid := False
+    val clr_payload = new MicroOp
+    val held = FixedPipeline(clr_valid, clr_payload, 1, holdPayload = true, resetValid = false)
+    val UOP = Payload(new MicroOp)
+    c1.valid := held.valid
+    c1(UOP) := held.payload
+    val kill = CtrlLink(c1, c1b)
+    kill.terminateWhen(IsKilledByBranch(io.core.brupdate, io.core.exception, c1(UOP)))
+    kill.bypass(UOP) := UpdateBrMask(io.core.brupdate, c1(UOP))
+    val stage = StageLink(c1b, c2)
+    val outputKill = CtrlLink(c2, c2d)
+    outputKill.terminateWhen(IsKilledByBranch(io.core.brupdate, io.core.exception, c2(UOP)))
 
     val s_uop = CombInit(stq_uop.at(clr_idx))
+    clr_payload := UpdateBrMask(io.core.brupdate, s_uop)
     when ( stq_valid           .at(clr_idx)        &&
            stq_addr            .at(clr_idx).valid  &&
            stq_data            .at(clr_idx).valid  &&
@@ -1113,13 +1122,15 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
           !stq_cleared         .at(clr_idx)        &&
           !IsKilledByBranch(io.core.brupdate, io.core.exception, s_uop)) {
       clr_valid := True
-      clr_uop   := UpdateBrMask(io.core.brupdate, s_uop)
 
       stq_cleared.write(clr_idx)(_ := True)
     }
 
-    io.core.clr_bsy(i).valid   := clr_valid_1 && !IsKilledByBranch(io.core.brupdate, io.core.exception, clr_uop_1)
-    io.core.clr_bsy(i).payload := clr_uop_1.rob_idx
+    io.core.clr_bsy(i).valid   := c2d.isValid
+    io.core.clr_bsy(i).payload := c2d(UOP).rob_idx
+
+    Builder(Seq(kill, stage, outputKill))
+    c2.valid.removeInitAssignments()
 
     clr_idx = WrapIncWCarry(clr_idx, numStqEntries)
   }
