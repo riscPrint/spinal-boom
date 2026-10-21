@@ -96,19 +96,27 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
     io.resp.f1(w) := io.resp_in(0).f1(w)
     io.resp.f2(w) := io.resp_in(0).f2(w)
     io.resp.f3(w) := io.resp_in(0).f3(w)
+    // Response ages ride the free-running prediction links; the hit selects them.
+    val f2_resp   = predAt(s1_resp(w), 1, 2)
+    val f2_is_br  = predAt(s1_is_br(w), 1, 2)
+    val f2_is_jal = predAt(s1_is_jal(w), 1, 2)
+    val f3_resp   = predAt(io.resp.f2(w).predicted_pc, 2, 3)
+    val f3_is_br  = predAt(io.resp.f2(w).is_br, 2, 3)
+    val f3_is_jal = predAt(io.resp.f2(w).is_jal, 2, 3)
+    val f3_jal_taken = predAt(s1_is_jal(w), 1, 3)
     when (pred(2)(HITS)(w)) {
-      io.resp.f2(w).predicted_pc := RegNext(s1_resp(w))
-      io.resp.f2(w).is_br        := RegNext(s1_is_br(w))
-      io.resp.f2(w).is_jal       := RegNext(s1_is_jal(w))
-      when (RegNext(s1_is_jal(w))) {
+      io.resp.f2(w).predicted_pc := f2_resp
+      io.resp.f2(w).is_br        := f2_is_br
+      io.resp.f2(w).is_jal       := f2_is_jal
+      when (f2_is_jal) {
         io.resp.f2(w).taken      := True
       }
     }
     when (pred(3)(HITS)(w)) {
-      io.resp.f3(w).predicted_pc := RegNext(io.resp.f2(w).predicted_pc)
-      io.resp.f3(w).is_br        := RegNext(io.resp.f2(w).is_br)
-      io.resp.f3(w).is_jal       := RegNext(io.resp.f2(w).is_jal)
-      when (RegNext(RegNext(s1_is_jal(w)))) {
+      io.resp.f3(w).predicted_pc := f3_resp
+      io.resp.f3(w).is_br        := f3_is_br
+      io.resp.f3(w).is_jal       := f3_is_jal
+      when (f3_jal_taken) {
         io.resp.f3(w).taken      := True
       }
     }

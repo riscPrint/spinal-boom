@@ -81,7 +81,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
 
   val mems = Seq((f"tage_l$histLength", nRows, bankWidth * tageEntrySz))
 
-  val s2_tag       = RegNext(s1_tag)
+  val s2_tag       = FixedPipeline.delay(s1_tag, 1)
 
   val s2_req_rtage = Vec.fill(bankWidth)(TageEntry())
   val s2_req_rus = Vec.fill(bankWidth*2)(Bool())
@@ -108,7 +108,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
   val update_wdata = Vec.fill(bankWidth)(TageEntry())
   val wen = CombInit(doing_reset || io.update_mask.reduce(_||_))
   val rdata = if (singlePorted) table.read(s1_hashed_idx, !wen && io.f1_req_valid) else table.read(s1_hashed_idx, io.f1_req_valid)
-  when (RegNext(wen) && Bool(singlePorted)) {
+  when (FixedPipeline.delay(wen, 1) && Bool(singlePorted)) {
     s2_req_rtage := Vec.fill(bankWidth)(TageEntry()).getZero
   } otherwise {
     s2_req_rtage := rdata

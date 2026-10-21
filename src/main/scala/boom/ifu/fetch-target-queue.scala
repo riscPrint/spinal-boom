@@ -198,9 +198,17 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
   val ras_update = CombInit(False)
   val ras_update_pc = CombInit(U(0, vaddrBitsExtended bits))
   val ras_update_idx = CombInit(U(0, log2Ceil(nRasEntries) bits))
-  io.ras_update     := RegNext(ras_update)
-  io.ras_update_pc  := RegNext(ras_update_pc)
-  io.ras_update_idx := RegNext(ras_update_idx)
+  // RAS update transaction: one unconditional stage, valid uninitialised.
+  val rasUpdateIn = new Bundle {
+    val pc  = UInt(vaddrBitsExtended bits)
+    val idx = UInt(log2Ceil(nRasEntries) bits)
+  }
+  rasUpdateIn.pc  := ras_update_pc
+  rasUpdateIn.idx := ras_update_idx
+  val rasUpdate = FixedPipeline(ras_update, rasUpdateIn, 1, holdPayload = false, resetValid = false)
+  io.ras_update     := rasUpdate.valid
+  io.ras_update_pc  := rasUpdate.payload.pc
+  io.ras_update_idx := rasUpdate.payload.idx
 
   val bpd_update_mispredict = Reg(Bool()) init False
   val bpd_update_repair = Reg(Bool()) init False
@@ -231,18 +239,25 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
   val bpd_pc    = bpdRd.payload.pc
   val bpd_target = bpdRd.payload.target
 
+  // Repair FSM inputs, each one unconditional data-only stage. (The originals
+  // were RegNexts declared inside the FSM branches, hence free-running.)
+  val delayed_redirect = FixedPipeline.delay(io.redirect.valid, 1)
+  val delayed_b2_mispredict = FixedPipeline.delay(io.brupdate.b2.mispredict, 1)
+  val delayed_b2_ftq_idx = FixedPipeline.delay(io.brupdate.b2.uop.ftq_idx, 1)
+  val delayed_enq_ptr = FixedPipeline.delay(enq_ptr, 1)
+  val delayed_bpd_update_mispredict = FixedPipeline.delay(bpd_update_mispredict, 1)
   when (io.redirect.valid) {
     bpd_update_mispredict := False
     bpd_update_repair     := False
-  } elsewhen (RegNext(io.brupdate.b2.mispredict)) {
+  } elsewhen (delayed_b2_mispredict) {
     bpd_update_mispredict := True
-    bpd_repair_idx        := RegNext(io.brupdate.b2.uop.ftq_idx)
-    bpd_end_idx           := RegNext(enq_ptr)
+    bpd_repair_idx        := delayed_b2_ftq_idx
+    bpd_end_idx           := delayed_enq_ptr
   } elsewhen (bpd_update_mispredict) {
     bpd_update_mispredict := False
     bpd_update_repair     := True
     bpd_repair_idx        := WrapInc(bpd_repair_idx, num_entries)
-  } elsewhen (bpd_update_repair && RegNext(bpd_update_mispredict)) {
+  } elsewhen (bpd_update_repair && delayed_bpd_update_mispredict) {
     bpd_repair_pc         := bpd_pc
     bpd_repair_idx        := WrapInc(bpd_repair_idx, num_entries)
   } elsewhen (bpd_update_repair) {
@@ -258,20 +273,23 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
                                bpd_ptr =/= deq_ptr &&
                                enq_ptr =/= WrapInc(bpd_ptr, num_entries) &&
                               !io.brupdate.b2.mispredict &&
-                              !io.redirect.valid && !RegNext(io.redirect.valid))
+                              !io.redirect.valid && !delayed_redirect)
   val do_mispredict_update = bpd_update_mispredict
   val do_repair_update     = bpd_update_repair
 
   bpd_any := do_commit_update || do_repair_update || do_mispredict_update
+  // Update-kind qualifiers, delayed with the predictor-update read.
+  val bpd_was_repair = FixedPipeline.delay(do_repair_update, 1)
+  val bpd_was_mispredict = FixedPipeline.delay(do_mispredict_update, 1)
   when (bpdRd.valid) {
     val cfi_idx = bpd_entry.cfi_idx.payload
     val valid_repair = bpd_pc =/= bpd_repair_pc
 
     io.bpdupdate.valid := (!first_empty &&
                            (bpd_entry.cfi_idx.valid || bpd_entry.br_mask =/= 0) &&
-                           !(RegNext(do_repair_update) && !valid_repair))
-    io.bpdupdate.payload.is_mispredict_update := RegNext(do_mispredict_update)
-    io.bpdupdate.payload.is_repair_update     := RegNext(do_repair_update)
+                           !(bpd_was_repair && !valid_repair))
+    io.bpdupdate.payload.is_mispredict_update := bpd_was_mispredict
+    io.bpdupdate.payload.is_repair_update     := bpd_was_repair
     io.bpdupdate.payload.pc      := bpd_pc
     io.bpdupdate.payload.btb_mispredicts := 0
     io.bpdupdate.payload.br_mask := Mux(bpd_entry.cfi_idx.valid,
@@ -293,12 +311,15 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
     bpd_ptr := WrapInc(bpd_ptr, num_entries)
   }
 
-  io.enq.ready := RegNext(!full || do_commit_update)
+  io.enq.ready := FixedPipeline.delay(!full || do_commit_update, 1)
 
   val redirect_idx = io.redirect.payload
   val redirect_entry = ram(redirect_idx)
   val redirect_new_entry = CombInit(redirect_entry)
 
+  // Redirect write-back staging: one unconditional data-only stage.
+  val redirect_wb_entry = FixedPipeline.delay(redirect_new_entry, 1)
+  val redirect_wb_idx = FixedPipeline.delay(io.redirect.payload, 1)
   when (io.redirect.valid) {
     enq_ptr    := WrapInc(io.redirect.payload, num_entries)
 
@@ -317,12 +338,12 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
     ras_update_pc  := redirect_entry.ras_top
     ras_update_idx := redirect_entry.ras_idx
 
-  } elsewhen (RegNext(io.redirect.valid)) {
-    prev_entry := RegNext(redirect_new_entry)
+  } elsewhen (delayed_redirect) {
+    prev_entry := redirect_wb_entry
     prev_ghist := bpd_ghist
     prev_pc    := bpd_pc
 
-    ram(RegNext(io.redirect.payload)) := RegNext(redirect_new_entry)
+    ram(redirect_wb_idx) := redirect_wb_entry
   }
 
   //-------------------------------------------------------------
@@ -334,19 +355,27 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
     val is_enq = (idx === enq_ptr) && io.enq.fire
     val get_entry = ram(idx)
 
-    io.rrd_ftq_resps(i).entry     := RegNext(get_entry)
+    // Read-port response: one unconditional stage, valid uninitialised.
+    val rrdIn = new Bundle {
+      val entry = new FTQBundle
+      val pc = UInt(vaddrBitsExtended bits)
+    }
+    rrdIn.entry := get_entry
+    rrdIn.pc := Mux(is_enq, io.enq.payload.pc, pcs(idx))
+    val rrd = FixedPipeline(idx =/= enq_ptr || is_enq, rrdIn, 1, holdPayload = false, resetValid = false)
+    io.rrd_ftq_resps(i).entry     := rrd.payload.entry
     if (i == 0) {
       io.rrd_ftq_resps(i).ghist   := ghist(1).read(idx, True)
     } else {
       io.rrd_ftq_resps(i).ghist.assignDontCare()
     }
-    io.rrd_ftq_resps(i).pc        := RegNext(Mux(is_enq, io.enq.payload.pc, pcs(idx)))
-    io.rrd_ftq_resps(i).valid     := RegNext(idx =/= enq_ptr || is_enq)
+    io.rrd_ftq_resps(i).pc        := rrd.payload.pc
+    io.rrd_ftq_resps(i).valid     := rrd.valid
   }
 
-  io.com_pc := RegNext(pcs(Mux(io.deq.valid, io.deq.payload, deq_ptr)))
+  io.com_pc := FixedPipeline.delay(pcs(Mux(io.deq.valid, io.deq.payload, deq_ptr)), 1)
 
   for (w <- 0 until coreWidth) {
-    io.debug_fetch_pc(w) := RegNext(pcs(io.debug_ftq_idx(w)))
+    io.debug_fetch_pc(w) := FixedPipeline.delay(pcs(io.debug_ftq_idx(w)), 1)
   }
 }

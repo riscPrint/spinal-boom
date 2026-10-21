@@ -300,12 +300,15 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
       banked_predictors(1).io.f0_mask  := fetchMask(io.f0_req.payload.pc).resized
     }
     val BANK0 = responseAges(0).insert(bank(io.f0_req.payload.pc) === 0)
+    // Both F0 histories ride the response ages; the F1 bank selects them.
+    val f1_histories = (0 until 2).map(i =>
+      responseAges(1)(responseAges(0).insert(io.f0_req.payload.ghist.histories(i))))
     when (responseAges(1)(BANK0)) {
-      banked_predictors(0).io.f1_ghist  := RegNext(io.f0_req.payload.ghist.histories(0))
-      banked_predictors(1).io.f1_ghist  := RegNext(io.f0_req.payload.ghist.histories(1))
+      banked_predictors(0).io.f1_ghist  := f1_histories(0)
+      banked_predictors(1).io.f1_ghist  := f1_histories(1)
     } otherwise {
-      banked_predictors(0).io.f1_ghist  := RegNext(io.f0_req.payload.ghist.histories(1))
-      banked_predictors(1).io.f1_ghist  := RegNext(io.f0_req.payload.ghist.histories(0))
+      banked_predictors(0).io.f1_ghist  := f1_histories(1)
+      banked_predictors(1).io.f1_ghist  := f1_histories(0)
     }
   }
 
