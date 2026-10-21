@@ -381,3 +381,18 @@ Validation for this commit: quick (255 runs) and extra (170 runs)
 completed with zero differences against the original inputs. The BoomFrontend
 elaboration spec passed. Retained gated-register names match the original
 extra-config RTL inventory, including all four two-bank history captures.
+
+The frontend F0/F1/F2 transaction ages now use StageLink, with f1_clear
+terminating valid through a CtrlLink before F2. Payload captures remain
+unconditional, including sfence on an invalid fetch; valids retain reset to
+false. The s2_ghist repair is a bypass before the F1-to-F2 register, preserving
+the F2-then-F4 priority. F1 comparisons read the pre-bypass node value.
+F3 pressure still reissues at the hand-written F0 next-PC mux and never drives
+a node ready. F2's queue-enqueue kill, all queues and frontend state remain
+hand-written. KonataProbe continues to read the existing frontend interfaces.
+Generated small/large RTL has one GHIST bypass mux per field, defaulted from
+F1, followed by one F2 register capture; there is no node-ready path.
+
+Validation for this commit: quick (255 runs) and extra (170 runs) and full (1,655 runs) completed with zero
+differences against the original inputs. The BoomFrontend elaboration spec passed.
+Retained gated-register names match the original extra-config RTL inventory.

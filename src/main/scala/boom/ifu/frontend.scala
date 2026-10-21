@@ -13,6 +13,7 @@ package boom.ifu
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.{Builder, CtrlLink, Node, StageLink}
 import spinal.lib.bus.tilelink
 import rocketchip.config.Parameters
 import rocketchip.rocket._
@@ -85,13 +86,28 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   // **** ICache Access (F1) ****
   //      Translate VPC
   // --------------------------------------------------------
-  val s1_vpc       = RegNext(s0_vpc)
-  val s1_valid     = RegNext(s0_valid) init False
-  val s1_ghist     = RegNext(s0_ghist)
-  val s1_is_replay = RegNext(s0_is_replay)
-  val s1_is_sfence = RegNext(s0_is_sfence)
+  // F3 pressure reissues at F0; no ready path crosses these boundaries.
+  val f0, f1, f1Out, f2 = Node()
+  val f0f1 = StageLink(f0, f1)
+  val f1c = CtrlLink(f1, f1Out)
+  val f1f2 = StageLink(f1Out, f2)
+  f0.valid := s0_valid
+  val VPC = f0.insert(s0_vpc)
+  val GHIST = f0.insert(s0_ghist)
+  val TSRC = f0.insert(s0_tsrc)
+  val IS_REPLAY = f0.insert(s0_is_replay)
+  val IS_SFENCE = f0.insert(s0_is_sfence)
+  val REPLAY_RESP = f0.insert(s0_replay_resp)
+  val REPLAY_PPC = f0.insert(s0_replay_ppc)
+  val SFENCE = f0.insert(io.cpu.sfence)
+
+  val s1_vpc       = f1(VPC)
+  val s1_valid     = f1.isValid
+  val s1_ghist     = f1(GHIST)
+  val s1_is_replay = f1(IS_REPLAY)
+  val s1_is_sfence = f1(IS_SFENCE)
   val f1_clear     = CombInit(False)
-  val s1_tsrc      = RegNext(s0_tsrc)
+  val s1_tsrc      = f1(TSRC)
   tlb.io.req.valid      := (s1_valid && !s1_is_replay && !f1_clear) || s1_is_sfence
   tlb.io.req.payload.cmd.assignDontCare()
   tlb.io.req.payload.vaddr := s1_vpc
@@ -99,12 +115,12 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   tlb.io.req.payload.size  := log2Ceil(coreInstBytes * fetchWidth)
   tlb.io.req.payload.prv   := io.ptw.status.prv
   tlb.io.req.payload.v     := io.ptw.status.v
-  tlb.io.sfence         := RegNext(io.cpu.sfence)
+  tlb.io.sfence         := f1(SFENCE)
   tlb.io.kill           := False
 
   val s1_tlb_miss = !s1_is_replay && tlb.io.resp.miss
-  val s1_tlb_resp = Mux(s1_is_replay, RegNext(s0_replay_resp), tlb.io.resp)
-  val s1_ppc  = Mux(s1_is_replay, RegNext(s0_replay_ppc), tlb.io.resp.paddr)
+  val s1_tlb_resp = Mux(s1_is_replay, f1(REPLAY_RESP), tlb.io.resp)
+  val s1_ppc  = Mux(s1_is_replay, f1(REPLAY_PPC), tlb.io.resp.paddr)
   val s1_bpd_resp = bpd.io.resp.f1
 
   icache.io.s1_paddr := s1_ppc
@@ -151,18 +167,27 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   // **** ICache Response (F2) ****
   // --------------------------------------------------------
 
-  val s2_valid = RegNext(s1_valid && !f1_clear) init False
-  val s2_vpc   = RegNext(s1_vpc)
-  val s2_ghist = Reg(new GlobalHistory)
-  s2_ghist := s1_ghist
-  val s2_ppc  = RegNext(s1_ppc)
-  val s2_tsrc = RegNext(s1_tsrc) // tsrc provides the predictor component which provided the prediction TO this instruction
+  val PPC = f1.insert(s1_ppc)
+  val TLB_RESP = f1.insert(s1_tlb_resp)
+  val TLB_MISS = f1.insert(s1_tlb_miss)
+  val NEXT_FETCH = f1.insert(f1_next_fetch)
+  val F1_TARG = if (useSlowBTBRedirect) Some(f1.insert(f1_targ)) else None
+  f1c.terminateWhen(f1_clear)
+  // F1 comparisons must use f1(GHIST), before this next-value repair mux.
+  val s2_ghist_next = f1c.bypass(GHIST)
+  s2_ghist_next := s1_ghist
+
+  val s2_valid = f2.isValid
+  val s2_vpc   = f2(VPC)
+  val s2_ghist = f2(GHIST)
+  val s2_ppc  = f2(PPC)
+  val s2_tsrc = f2(TSRC) // tsrc provides the predictor component which provided the prediction TO this instruction
   val s2_fsrc = UInt(BSRC_SZ bits) // fsrc provides the predictor component which provided the prediction FROM this instruction
   s2_fsrc := BSRC_1
   val f2_clear = CombInit(False)
-  val s2_tlb_resp = RegNext(s1_tlb_resp)
-  val s2_tlb_miss = RegNext(s1_tlb_miss)
-  val s2_is_replay = RegNext(s1_is_replay) && s2_valid
+  val s2_tlb_resp = f2(TLB_RESP)
+  val s2_tlb_miss = f2(TLB_MISS)
+  val s2_is_replay = f2(IS_REPLAY) && s2_valid
   val s2_xcpt = s2_valid && (s2_tlb_resp.ae.inst || s2_tlb_resp.pf.inst) && !s2_is_replay
   val f3_ready = Bool()
 
@@ -176,9 +201,9 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   }
   val f2_targs = f2_bpd_resp.preds.map(_.predicted_pc.payload)
   val f2_do_redirect = f2_redirects.reduce(_||_) && Bool(useBPD)
-  val f2_next_fetch = RegNext(f1_next_fetch)
+  val f2_next_fetch = f2(NEXT_FETCH)
   val f2_predicted_target = Mux(f2_do_redirect,
-                                if (useSlowBTBRedirect) RegNext(f1_targ) else PriorityMux(f2_redirects, f2_targs),
+                                if (useSlowBTBRedirect) f2(F1_TARG.get) else PriorityMux(f2_redirects, f2_targs),
                                 f2_next_fetch)
   val f2_predicted_ghist = s2_ghist.update(
     f2_bpd_resp.preds.map(p => p.is_br && p.predicted_pc.valid).asUInt & f2_fetch_mask.resize(fetchWidth),
@@ -294,7 +319,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   } elsewhen (s2_valid && f3_ready) {
     when (s1_valid && s1_vpc === f2_predicted_target && !f2_correct_f1_ghist) {
       // We trust our prediction of what the global history for the next branch should be
-      s2_ghist := f2_predicted_ghist
+      s2_ghist_next := f2_predicted_ghist
     }
     f2_prev_is_half := bank_prev_is_half && !f2_do_redirect
     f2_prev_half    := bank_prev_half
@@ -641,7 +666,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     } elsewhen (!f3.io.deq.valid && s2_valid && s2_vpc === f4_decoded_target && !f4_correct_f2_ghist) {
       f3.io.enq.payload.ghist := f4_decoded_ghist
     } elsewhen (!f3.io.deq.valid && !s2_valid && s1_vpc === f4_decoded_target && !f4_correct_f1_ghist) {
-      s2_ghist := f4_decoded_ghist
+      s2_ghist_next := f4_decoded_ghist
     } elsewhen (( f3.io.deq.valid && (f3.io.deq.payload.pc =/= f4_decoded_target || f4_correct_f3_ghist)) ||
                 (!f3.io.deq.valid &&  s2_valid && (s2_vpc =/= f4_decoded_target || f4_correct_f2_ghist)) ||
                 (!f3.io.deq.valid && !s2_valid &&  s1_valid && (s1_vpc =/= f4_decoded_target || f4_correct_f1_ghist)) ||
@@ -737,6 +762,8 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     f1_clear    := True
     jump_to_reset := False
   }
+
+  Builder(f0f1, f1c, f1f2)
 
   override def toString: String =
     (BoomCoreStringPrefix("====Overall Frontend Params====") + "\n"
