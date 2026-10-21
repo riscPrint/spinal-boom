@@ -469,3 +469,10 @@ ROB notifications use killed-valid `FixedPipeline` flows with deliberately raw
 payloads. Existing registered ROB-flush inputs and all combinational writeback,
 wakeup and dispatch control stay at their original cycles. The commit trace
 and Konata observation ports are untouched.
+
+
+FP load-response stages use the same unconditional, uninitialised writeback tap.
+Port zero feeds the long-latency arbiter from the killed, mask-updated view;
+ports one and above feed the FP register file from the raw view and ROB/wakeup
+from the killed view. Recoding uses the delayed data and mem_size, with no new
+output kill or backpressure. The extra-port path exists only on mega and giga.
