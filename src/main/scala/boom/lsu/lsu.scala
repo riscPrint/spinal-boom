@@ -1191,9 +1191,9 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   val s1_set_execute     = CombInit(s1_executing_loads)
 
   val wb_ldst_forward_valid    = Vec.fill(lsuWidth)(Bool())
-  val wb_ldst_forward_e        = widthMap(w => RegNext(UpdateBrMask(io.core.brupdate, ldq_read(lcam_ldq_idx(w)).payload)))
-  val wb_ldst_forward_ldq_idx  = SafeRegNext(lcam_ldq_idx)
-  val wb_ldst_forward_ld_addr  = RegNext(lcam_addr)
+  val wb_ldst_forward_e        = widthMap(w => ctx(w).toWb(UpdateBrMask(io.core.brupdate, ldq_read(lcam_ldq_idx(w)).payload)))
+  val wb_ldst_forward_ldq_idx  = widthMap(w => ctx(w).toWb(lcam_ldq_idx(w)))
+  val wb_ldst_forward_ld_addr  = widthMap(w => ctx(w).toWb(lcam_addr(w)))
   val wb_ldst_forward_stq_idx  = Vec.fill(lsuWidth)(UInt(stqAddrSz+1 bits))
 
   val failed_load = CombInit(False)
@@ -1395,6 +1395,14 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     when (s1_set_execute(i)) { ldq_executed(i) := True }
   }
 
+  val fwd = for (w <- 0 until lsuWidth) yield new Area {
+    val f0, f0k, f1 = Node()
+    f0.valid := can_forward(w) && !kill_forward(w) && do_ld_search(w)
+    val kill = CtrlLink(f0, f0k)
+    kill.terminateWhen(IsKilledByBranch(io.core.brupdate, io.core.exception, lcam_uop(w)))
+    val links = Seq(kill, StageLink(f0k, f1))
+  }
+
   // Find the youngest store which the load is dependent on
   for (w <- 0 until lsuWidth) {
     val (youngest_matching, match_found) = ForwardingAgeLogic(numStqEntries, ldst_addr_matches(w), GetRealLSQIdx(lcam_uop(w).stq_idx))
@@ -1405,8 +1413,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     wb_ldst_forward_valid(w)    := (youngest_matching === youngest_forwarder                       &&
                                     match_found                                                    &&
                                     forwarder_found                                                &&
-                                    RegNext(can_forward(w) && !kill_forward(w) && do_ld_search(w)) &&
-                                    !RegNext(IsKilledByBranch(io.core.brupdate, io.core.exception, lcam_uop(w))))
+                                    fwd(w).f1.isValid)
   }
 
   // Avoid deadlock with a 1-w LSU prioritizing load wakeups > store commits
@@ -1416,7 +1423,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     // Wakeups may repeatedly find a st->ld addr conflict and fail to forward,
     // repeated wakeups may block the store from ever committing
     // Disallow load wakeups 1 cycle after this happens to allow the stores to drain
-    when (RegNext(ldst_addr_matches(0) =/= 0) && !wb_ldst_forward_valid(0)) {
+    when (ctx(0).toWb(ldst_addr_matches(0) =/= 0) && !wb_ldst_forward_valid(0)) {
       block_load_wakeup := True
     }
 
@@ -1436,15 +1443,21 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   val mem_stld_forward_stq_idx = widthMap(w => LSUAgePriorityEncoder(stld_prs2_matches(w).asBools, lcam_uop(w).stq_idx))
   val mem_stld_forward_valid   = widthMap(w => do_ld_search(w) && bitAt(stld_prs2_matches(w), mem_stld_forward_stq_idx(w)))
 
+  val wb_stld_forward_valid = if (enableStLdForwarding)
+    Some(widthMap(w => ctx(w).toWb(mem_stld_forward_valid(w)))) else None
+  val wb_stld_forward_stq_idx = if (enableStLdForwarding)
+    Some(widthMap(w => ctx(w).toWb(mem_stld_forward_stq_idx(w)))) else None
+
   // Task 3: Clr unsafe bit in ROB for succesful t_ranslations
   //         Delay this a cycle to avoid going ahead of the exception broadcast
   //         The unsafe bit is cleared on the first translation, so no need to fire for load wakeups
+  val wb_failed_load = ctxC.toWb(failed_load)
   for (w <- 0 until lsuWidth) {
     io.core.clr_unsafe(w).valid := (
-      RegNext(do_st_search(w)) ||
-      (!io.dmem.nack(w).valid && RegNext(do_ld_search(w) && !fired_load_agen(w) && !io.dmem.s1_kill(w) && mem_req_fire(w)))
-    ) && !RegNext(failed_load)
-    io.core.clr_unsafe(w).payload := RegNext(lcam_uop(w).rob_idx)
+      ctx(w).toWb(do_st_search(w)) ||
+      (!io.dmem.nack(w).valid && ctx(w).toWb(do_ld_search(w) && !fired_load_agen(w) && !io.dmem.s1_kill(w) && mem_req_fire(w)))
+    ) && !wb_failed_load
+    io.core.clr_unsafe(w).payload := ctx(w).toWb(lcam_uop(w).rob_idx)
   }
 
   // one exception port, but multiple causes!
@@ -1659,10 +1672,10 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     if (enableStLdForwarding) {
       when (iresp(w).valid &&
             iresp(w).payload.uop.uses_ldq &&
-            iresp(w).payload.uop.ldq_idx === RegNext(lcam_ldq_idx(w)) &&
-            RegNext(mem_stld_forward_valid(w))) {
-        assert(!stq_data.at(RegNext(mem_stld_forward_stq_idx(w))).valid)
-        stq_data.write(RegNext(mem_stld_forward_stq_idx(w))) { d =>
+            iresp(w).payload.uop.ldq_idx === wb_ldst_forward_ldq_idx(w) &&
+            wb_stld_forward_valid.get(w)) {
+        assert(!stq_data.at(wb_stld_forward_stq_idx.get(w)).valid)
+        stq_data.write(wb_stld_forward_stq_idx.get(w)) { d =>
           d.valid   := True
           d.payload := iresp(w).payload.data
         }
@@ -1950,7 +1963,8 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
       ldq_valid(i)           := False
     }
   }
-  Builder(ctx.flatMap(_.links) ++ ctxC.links ++ xcpt.flatMap(_.links) ++ report.links)
+  Builder(ctx.flatMap(_.links) ++ ctxC.links ++ xcpt.flatMap(_.links) ++ report.links ++ fwd.flatMap(_.links))
+  fwd.foreach(_.f1.valid.removeInitAssignments())
   xcpt.foreach(_.x1.valid.removeInitAssignments())
 
 }

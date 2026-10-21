@@ -276,3 +276,11 @@ LSU translated exceptions use per-lane branch-killed stages with no valid init.
 The ROB lxcpt report keeps its reset-valid stage plus the original combinational
 output kill. Only the input boundary updates the mask; exception selection and
 oldest selection remain combinational.
+
+LSU MEM-to-WB forwarding context and clr_unsafe use the same valid-less lane
+chains. The forwarding-valid branch kill precedes its uninitialised StageLink;
+ForwardingAgeLogic remains unchanged. clr_unsafe keeps its combinational WB nack
+check and the nested EXE-to-MEM request-fire delay. Store-to-load forwarding
+shares the existing WB load index and stages its store index/valid only when
+enabled. Separate elaboration covers that flag with single-ported duplicated
+and banked data arrays, since default golden presets do not cover those flags.

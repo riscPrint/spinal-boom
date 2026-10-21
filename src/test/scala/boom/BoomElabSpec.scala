@@ -58,6 +58,15 @@ class BoomElabSpec extends AnyFunSuite {
   elab("BoomCore") { implicit p => new BoomCore() }
   elab("BoomTile") { implicit p => new BoomTile }
 
+  test("memory units with store-to-load forwarding and single-ported data arrays elaborate") {
+    for (base <- Seq(BoomConfigs.small(), BoomConfigs.large())) {
+      val tile = base.copy(core = base.core.copy(enableStLdForwarding = true, dcacheSinglePorted = true))
+      implicit val p: Parameters = BoomTestParams(tile)
+      SpinalBoomConfig("generated/test").generateVerilog(new LSU)
+      SpinalBoomConfig("generated/test").generateVerilog(new BoomNonBlockingDCache(0))
+    }
+  }
+
   test("medium/large configs: rename, rob, frontend elaborate") {
     for (tile <- Seq(BoomConfigs.medium(), BoomConfigs.large())) {
       implicit val p: Parameters = BoomTestParams(tile)
