@@ -38,7 +38,7 @@ class GMicroBTBBranchPredictorBank(params: BoomGMicroBTBParams = BoomGMicroBTBPa
   val btb = Reg(Vec.fill(nWays)(UInt(vaddrBitsExtended bits)))
   val mems = Nil
 
-  val s1_req_tag = RegNext(io.f0_pc(tagSz-1 downto 0))
+  val s1_req_tag = predAt(io.f0_pc(tagSz-1 downto 0), 0, 1)
 
   val s1_hit_oh = (0 until nWays) map { w => valids(w) && meta(w).tag === s1_req_tag }
   val s1_hit = s1_hit_oh.reduce(_||_) && s1_valid
@@ -61,9 +61,9 @@ class GMicroBTBBranchPredictorBank(params: BoomGMicroBTBParams = BoomGMicroBTBPa
   io.resp.f1(bankWidth-1).is_jal             := s1_hit_meta.is_jal
   io.resp.f1(bankWidth-1).taken              := s1_hit && (s1_hit_meta.is_jal || s1_hit_meta.ctr(1))
 
-  io.f3_meta := RegNext(RegNext(s1_meta.asBits.asUInt)).resized
+  io.f3_meta := predAt(s1_meta.asBits.asUInt, 1, 3).resized
 
-  val s1_update_pc = RegNext(io.update.payload.pc)
+  val s1_update_pc = updAt(io.update.payload.pc, 0, 1)
   val s1_update_hit_oh = (0 until nWays) map { w =>
     meta(w).tag === s1_update_pc(tagSz-1 downto 0) && valids(w)
   }

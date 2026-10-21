@@ -53,8 +53,7 @@ class LocalBranchPredictorBank(implicit p: Parameters) extends AbstractLocalBran
 
   val s0_idx = fetchIdx(io.f0_pc)
   val s1_rhist = entries.read(s0_idx, io.f0_valid)
-  val s2_rhist = RegNext(s1_rhist)
-  val s3_rhist = RegNext(s2_rhist)
+  val s3_rhist = FixedPipeline.delay(s1_rhist, 2)
   io.f1_lhist := s1_rhist
   io.f3_lhist := s3_rhist
 
@@ -66,7 +65,7 @@ class LocalBranchPredictorBank(implicit p: Parameters) extends AbstractLocalBran
   f3_update_idx.assignDontCare()
   f3_update_lhist.assignDontCare()
 
-  val s1_update = RegNext(io.update)
+  val s1_update = FixedPipeline.delay(io.update, 1)
   val s1_update_idx = fetchIdx(s1_update.pc)
 
   when (s1_update.valid &&

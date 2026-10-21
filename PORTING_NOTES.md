@@ -357,3 +357,15 @@ this refactor.
 Validation for this commit: quick (255 runs) and extra (170 runs) completed with zero
 differences against the original inputs. The BoomFrontend elaboration spec passed.
 Retained gated-register names match the original extra-config RTL inventory.
+
+Frontend alternative banks: FAuBTB and micro-BTB responses and metadata,
+GuBTB's unaligned request tag/update PC and metadata, and SlowBTB metadata,
+request tag and hit condition now use the shared prediction/update links.
+Local history uses FixedPipeline.delay for its existing two-stage read-result
+chain and one-stage update. HBIM and Tourney need only the converted base
+ages; their extra register is part of the SRAM read port. The gated SlowBTB
+target and local-history index registers remain verbatim.
+
+Validation for this commit: quick (255 runs) and extra (170 runs) completed with zero
+differences against the original inputs. The BoomFrontend elaboration spec passed.
+Retained gated-register names match the original extra-config RTL inventory.

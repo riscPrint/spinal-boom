@@ -46,7 +46,7 @@ class SlowBTBBranchPredictorBank(params: BoomSlowBTBParams = BoomSlowBTBParams()
   }
 
   val s2_meta = BTBPredictMeta()
-  val f3_meta = RegNext(s2_meta)
+  val f3_meta = predAt(s2_meta, 2, 3)
 
   io.f3_meta := f3_meta.asBits.asUInt.resized
 
@@ -65,7 +65,7 @@ class SlowBTBBranchPredictorBank(params: BoomSlowBTBParams = BoomSlowBTBParams()
   val s2_req_rebtb = UInt(vaddrBitsExtended bits)
 
   val s1_req_tag   = s1_idx >> log2Ceil(nSets)
-  val s2_req_tag   = RegNext(s1_req_tag)
+  val s2_req_tag   = predAt(s1_req_tag, 1, 2)
 
   val s2_resp   = Vec.fill(bankWidth)(Flow(UInt(vaddrBitsExtended bits)))
   val s2_is_br  = Vec.fill(bankWidth)(Bool())
@@ -96,7 +96,7 @@ class SlowBTBBranchPredictorBank(params: BoomSlowBTBParams = BoomSlowBTBParams()
     io.resp.f1(w) := io.resp_in(0).f1(w)
     io.resp.f2(w) := io.resp_in(0).f2(w)
     io.resp.f3(w) := io.resp_in(0).f3(w)
-    when (RegNext(s2_hits(w))) {
+    when (predAt(s2_hits(w), 2, 3)) {
       io.resp.f3(w).predicted_pc := RegNext(s2_resp(w))
     }
   }
