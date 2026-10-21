@@ -260,3 +260,8 @@ The D-cache s3-to-s5 store/AMO history uses three unconditional StageLinks
 without valid init. A CtrlLink bypass replaces only s3 request data with the AMO
 result before the s4 register. The ALU reads the original s3 data register; the
 store write and all later bypass taps see the overridden value.
+
+The banked data array carries bank/index/read-grant context from s0 to s1 and
+selection/read data from s1 to s2 using valid-less StageLinks. Memory reads,
+bank arbitration and conflict nacks retain their original timing. The duplicated
+data array keeps its single memory-output registers.

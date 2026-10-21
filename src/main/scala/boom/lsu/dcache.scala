@@ -356,28 +356,36 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
 
   //----------------------------------------------------------------------------------------------------
 
-  val s1_rbanks         = RegNext(s0_rbanks)
-  val s1_ridxs          = RegNext(s0_ridxs)
-  val s1_read_valids    = RegNext(s0_read_valids)
+  val b0, b1, b2 = Node()
+  val RBANKS = b0.insert(s0_rbanks)
+  val RIDXS = b0.insert(s0_ridxs)
+  val READ_VALIDS = b0.insert(s0_read_valids)
+  val DO_READ = b0.insert(Vec(s0_do_bank_read))
+  val s1_rbanks = b1(RBANKS)
+  val s1_ridxs = b1(RIDXS)
+  val s1_read_valids = b1(READ_VALIDS)
   val s1_pipe_selection = pipeMap(i => Vec(PriorityEncoderOH((0 until lsuWidth).map(j =>
                             if (j < i) s1_read_valids(j) && s1_rbanks(j) === s1_rbanks(i)
                             else if (j == i) True else False))))
   val s1_ridx_match     = pipeMap(i => Vec((0 until lsuWidth).map(j => if (j < i) s1_ridxs(j) === s1_ridxs(i)
                                                     else if (j == i) True else False)))
   val s1_nacks          = pipeMap(w => s1_read_valids(w)
-    && (!RegNext(s0_do_bank_read(w)) || (s1_pipe_selection(w).asUInt & ~s1_ridx_match(w).asUInt).orR)
+    && (!b1(DO_READ)(w) || (s1_pipe_selection(w).asUInt & ~s1_ridx_match(w).asUInt).orR)
   )
   val s1_bank_selection = pipeMap(w => Mux1H(s1_pipe_selection(w), s1_rbanks))
 
   //----------------------------------------------------------------------------------------------------
 
-  val s2_bank_selection = RegNext(s1_bank_selection)
+  val BANK_SEL = b1.insert(s1_bank_selection)
+  val s2_bank_selection = b2(BANK_SEL)
   io.s1_nacks          := s1_nacks
 
   val data_arrays = Seq.tabulate(nBanks) {
     b => new SyncReadVecMem(bankSize, nWays * rowWords, UInt(encDataBits bits)).setName(s"array_${b}")
   }
-  val s2_bank_reads = Reg(Vec.fill(nBanks)(Vec.fill(nWays)(UInt(encRowBits bits))))
+  val bank_reads = Vec.fill(nBanks)(Vec.fill(nWays)(UInt(encRowBits bits)))
+  val BANK_READS = b1.insert(bank_reads)
+  val s2_bank_reads = b2(BANK_READS)
   for (b <- 0 until nBanks) {
     val array = data_arrays(b)
 
@@ -395,7 +403,7 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
     } else {
       array.read(ridx, read_en)
     }
-    s2_bank_reads(b).assignFromBits(rdata.asBits)
+    bank_reads(b).assignFromBits(rdata.asBits)
 
     val data = Vec.fill(nWays * rowWords)(UInt(encDataBits bits))
     for (w <- 0 until nWays) {
@@ -410,6 +418,8 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
       io.resp(i)(w) := s2_bank_reads.at(s2_bank_selection(i))(w)
     }
   }
+  Builder(Seq(StageLink(b0, b1), StageLink(b1, b2)))
+
 }
 
 /**
