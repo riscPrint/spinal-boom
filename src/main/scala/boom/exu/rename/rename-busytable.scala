@@ -45,9 +45,10 @@ class RenameBusyTable(
     val debug = new Bundle { val busytable = out UInt(numPregs bits) }
   }
   val wakeups = io.wakeups.map { w =>
+    val delayed = FixedPipeline(w.valid, w.payload, 1, holdPayload = false, resetValid = false)
     val wu = Flow(new Wakeup)
-    wu.valid   := RegNext(w.valid) && ((RegNext(w.payload.speculative_mask) & io.child_rebusys) === 0)
-    wu.payload := RegNext(w.payload)
+    wu.valid   := delayed.valid && ((delayed.payload.speculative_mask & io.child_rebusys) === 0)
+    wu.payload := delayed.payload
     wu
   }
 

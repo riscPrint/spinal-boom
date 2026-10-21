@@ -122,7 +122,7 @@ class BankedRF[T <: Data](
           rfs(w).io.arb_read_reqs(i).payload := (io.arb_read_reqs(i).payload >> log2Ceil(numBanks)).resized
         }
         val arb_data_sel = UIntToOH(bidx, numBanks)
-        val rrd_data_sel = RegNext(arb_data_sel)
+        val rrd_data_sel = FixedPipeline.delay(arb_data_sel, 1)
         io.arb_read_reqs(i).ready := Mux1H(arb_data_sel, rfs.map(_.io.arb_read_reqs(i).ready))
         io.rrd_read_resps(i)      := Mux1H(rrd_data_sel, rfs.map(_.io.rrd_read_resps(i)))
       }
@@ -180,7 +180,7 @@ class PartiallyPortedRF[T <: Data](
     assert(rf.io.arb_read_reqs(j).ready)
   }
 
-  val rrd_data_sels = RegNext(data_sels)
+  val rrd_data_sels = FixedPipeline.delay(data_sels, 1)
 
   for (i <- 0 until numLogicalReadPorts) {
     io.rrd_read_resps(i) := Mux1H(rrd_data_sels(i).asBools, rf.io.rrd_read_resps)

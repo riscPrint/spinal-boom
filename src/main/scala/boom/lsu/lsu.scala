@@ -351,11 +351,16 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   var actual_ld_enq_idx: UInt = (ld_enq_idx)
   var actual_st_enq_idx: UInt = (st_enq_idx)
 
-  val dis_ldq_oh = Reg(Vec.fill(numLdqEntries)(Bool()))
-  val dis_stq_oh = Reg(Vec.fill(numStqEntries)(Bool()))
-  dis_ldq_oh.foreach(_ := False)
-  dis_stq_oh.foreach(_ := False)
-  val dis_uops   = Reg(Vec.fill(coreWidth)(Flow(new MicroOp)))
+  // Dispatch to LDQ/STQ enqueue: one unconditional, uninitialised stage.
+  val dis_ldq_oh_next = Vec.fill(numLdqEntries)(Bool())
+  val dis_stq_oh_next = Vec.fill(numStqEntries)(Bool())
+  dis_ldq_oh_next.foreach(_ := False)
+  dis_stq_oh_next.foreach(_ := False)
+  val dis_ldq_oh = FixedPipeline.delay(dis_ldq_oh_next, 1)
+  val dis_stq_oh = FixedPipeline.delay(dis_stq_oh_next, 1)
+  val dis_uops_next = Vec.fill(coreWidth)(Flow(new MicroOp))
+  val dis_uops   = Vec(dis_uops_next.map(d => FixedPipeline(d.valid, d.payload, 1,
+    holdPayload = false, resetValid = false)))
 
   // Chisel computes (1.U << idx) at its full width, so a wrapped index sets no bit of the mask.
   def oneHotAt(idx: UInt, n: Int): UInt = (U(1, 1 bits) << idx).resize(n)
@@ -383,17 +388,17 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     val dis_ld_val = io.core.dis_uops(w).valid && io.core.dis_uops(w).payload.uses_ldq && !io.core.dis_uops(w).payload.exception
     val dis_st_val = io.core.dis_uops(w).valid && io.core.dis_uops(w).payload.uses_stq && !io.core.dis_uops(w).payload.exception
 
-    dis_uops(w).valid   := dis_ld_val || dis_st_val
-    dis_uops(w).payload := io.core.dis_uops(w).payload
+    dis_uops_next(w).valid   := dis_ld_val || dis_st_val
+    dis_uops_next(w).payload := io.core.dis_uops(w).payload
 
     when (dis_ld_val) {
-      dis_ldq_oh.write(actual_ld_enq_idx)(_ := True)
+      dis_ldq_oh_next.write(actual_ld_enq_idx)(_ := True)
       ldq_next_stq_idx.write(actual_ld_enq_idx)(_ := st_enq_idx)
       assert (actual_ld_enq_idx === io.core.dis_uops(w).payload.ldq_idx, "[lsu] mismatch enq load tag.")
       assert (!ldq_valid.at(actual_ld_enq_idx), "[lsu] Enqueuing uop is overwriting ldq entries")
     }
     when (dis_st_val) {
-      dis_stq_oh.write(actual_st_enq_idx)(_ := True)
+      dis_stq_oh_next.write(actual_st_enq_idx)(_ := True)
       stq_next_ldq_idx.write(actual_st_enq_idx)(_ := ld_enq_idx)
       assert (actual_st_enq_idx === io.core.dis_uops(w).payload.stq_idx, "[lsu] mismatch enq store tag.")
       assert (!stq_valid.at(actual_st_enq_idx), "[lsu] Enqueuing uop is overwriting stq entries")

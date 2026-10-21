@@ -224,8 +224,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   // --------------------------------------
   // Dealing with branch resolutions
 
+  // One-cycle ROB-flush flag shared by every consumer: data-only, uninitialised.
+  val rob_flush_delayed = FixedPipeline.delay(rob.io.flush.valid, 1)
+
   // The individual branch resolutions from each ALU
-  val brinfos = Reg(Vec.fill(coreWidth)(Flow(new BrResolutionInfo)))
+  val brinfoInputs = Vec.fill(coreWidth)(Flow(new BrResolutionInfo))
+  val brinfos = Vec(brinfoInputs.map(in => FixedPipeline(in.valid, in.payload, 1,
+    holdPayload = false, resetValid = false)))
 
   // "Merged" branch update info from all ALUs
   // brmask contains masks for rapidly clearing mispredicted instructions
@@ -233,29 +238,30 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   //           brindices is delayed a cycle
   val brupdate  = new BrUpdateInfo
   val b1    = new BrUpdateMasks
-  val b2    = Reg(new BrResolutionInfo)
+  val b2Input = new BrResolutionInfo
+  val b2    = FixedPipeline.delay(b2Input, 1)
 
   brupdate.b1 := b1
   brupdate.b2 := b2
 
-  for ((b, a) <- brinfos zip alu_exe_units) {
+  for ((b, a) <- brinfoInputs zip alu_exe_units) {
     b.payload := UpdateBrMask(brupdate, a.io_brinfo.payload)
-    b.valid := a.io_brinfo.valid && !rob.io.flush.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), a.io_brinfo.payload)
+    b.valid := a.io_brinfo.valid && !rob.io.flush.valid && !IsKilledByBranch(brupdate, rob_flush_delayed, a.io_brinfo.payload)
   }
   b1.resolve_mask := brinfos.map(x => (x.valid.asUInt << x.payload.uop.br_tag).resize(maxBrCount)).reduce(_|_)
   b1.mispredict_mask := brinfos.map(x => ((x.valid && x.payload.mispredict).asUInt << x.payload.uop.br_tag).resize(maxBrCount)).reduce(_|_)
 
   // Find the oldest mispredict and use it to update indices
-  val live_brinfos      = brinfos.map(br => br.valid && br.payload.mispredict && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), br.payload.uop))
+  val live_brinfos      = brinfos.map(br => br.valid && br.payload.mispredict && !IsKilledByBranch(brupdate, rob_flush_delayed, br.payload.uop))
   val mispredict_val    = live_brinfos.reduce(_||_)
 
-  b2.mispredict  := mispredict_val
-  b2.cfi_type    := Mux1H(live_brinfos, brinfos.map(_.payload.cfi_type))
-  b2.taken       := Mux1H(live_brinfos, brinfos.map(_.payload.taken))
-  b2.pc_sel      := Mux1H(live_brinfos, brinfos.map(_.payload.pc_sel))
-  b2.uop         := UpdateBrMask(brupdate, PriorityMux(live_brinfos, brinfos.map(_.payload.uop)))
-  b2.jalr_target := Mux1H(live_brinfos, brinfos.map(_.payload.jalr_target))
-  b2.target_offset := Mux1H(live_brinfos, brinfos.map(_.payload.target_offset))
+  b2Input.mispredict  := mispredict_val
+  b2Input.cfi_type    := Mux1H(live_brinfos, brinfos.map(_.payload.cfi_type))
+  b2Input.taken       := Mux1H(live_brinfos, brinfos.map(_.payload.taken))
+  b2Input.pc_sel      := Mux1H(live_brinfos, brinfos.map(_.payload.pc_sel))
+  b2Input.uop         := UpdateBrMask(brupdate, PriorityMux(live_brinfos, brinfos.map(_.payload.uop)))
+  b2Input.jalr_target := Mux1H(live_brinfos, brinfos.map(_.payload.jalr_target))
+  b2Input.target_offset := Mux1H(live_brinfos, brinfos.map(_.payload.target_offset))
 
   val oldest_mispredict_ftq_idx = Mux1H(live_brinfos, brinfos.map(_.payload.uop.ftq_idx))
 
@@ -334,7 +340,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   io.ifu.enable_bpd := custom_csrs.enableBPD
 
   val icache_blocked = False
-  csr.io.counters foreach { c => c.inc := RegNext(perfEvents.evaluate(c.eventSel)).asUInt.resized }
+  csr.io.counters foreach { c => c.inc := FixedPipeline.delay(perfEvents.evaluate(c.eventSel), 1).asUInt.resized }
 
   //****************************************
   // Time Stamp Counter & Retired Instruction Counter
@@ -430,7 +436,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
 
   io.ifu.flush_icache := (0 until coreWidth).map { i =>
     (rob.io.commit.arch_valids(i) && rob.io.commit.uops(i).is_fencei) ||
-    (RegNext(dec_valids(i) && dec_uops(i).is_jalr && csr.io.status.debug))
+    FixedPipeline.delay(dec_valids(i) && dec_uops(i).is_jalr && csr.io.status.debug, 1)
   }.reduce(_||_)
 
   val csr_evec_delayed = FixedPipeline.delay(csr.io.evec, 3)
@@ -444,10 +450,21 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   //       ERETs are reported to the CSR two cycles before we send the flush
   //       Exceptions are reported to the CSR on the cycle we send the flush
   // This discrepency should be resolved elsewhere.
-  when (RegNext(rob.io.flush.valid)) {
+  // Delayed ROB-flush fields: one unconditional, uninitialised data stage
+  // (the original RegNexts were declared inside the branches, so free-running).
+  val flushInfo = new Bundle {
+    val flush_typ = cloneOf(rob.io.flush.payload.flush_typ)
+    val pc_lob    = cloneOf(rob.io.flush.payload.pc_lob)
+    val edge_inst = Bool()
+    val is_rvc    = Bool()
+    val ftq_idx   = cloneOf(rob.io.flush.payload.ftq_idx)
+  }
+  flushInfo.assignSomeByName(rob.io.flush.payload)
+  val delayed_flush = FixedPipeline.delay(flushInfo, 1)
+  when (rob_flush_delayed) {
     io.ifu.redirect_val   := True
     io.ifu.redirect_flush := True
-    val flush_typ = RegNext(rob.io.flush.payload.flush_typ)
+    val flush_typ = delayed_flush.flush_typ
     // Clear the global history when we flush the ROB (exceptions, AMOs, unique instructions, etc.)
     val new_ghist = new GlobalHistory
     new_ghist.assignFromBits(B(0, new_ghist.getBitsWidth bits))
@@ -460,14 +477,14 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
                                  csr.io.evec)
     } otherwise {
       val flush_pc = (AlignPCToBoundary(io.ifu.rrd_ftq_resps(0).pc, icBlockBytes)
-                      + RegNext(rob.io.flush.payload.pc_lob).resize(vaddrBitsExtended)
-                      - Mux(RegNext(rob.io.flush.payload.edge_inst), U(2, vaddrBitsExtended bits), U(0, vaddrBitsExtended bits)))
-      val flush_pc_next = flush_pc + Mux(RegNext(rob.io.flush.payload.is_rvc), U(2, vaddrBitsExtended bits), U(4, vaddrBitsExtended bits))
+                      + delayed_flush.pc_lob.resize(vaddrBitsExtended)
+                      - Mux(delayed_flush.edge_inst, U(2, vaddrBitsExtended bits), U(0, vaddrBitsExtended bits)))
+      val flush_pc_next = flush_pc + Mux(delayed_flush.is_rvc, U(2, vaddrBitsExtended bits), U(4, vaddrBitsExtended bits))
       io.ifu.redirect_pc := Mux(FlushTypes.useSamePC(flush_typ),
                                 flush_pc, flush_pc_next)
     }
-    io.ifu.redirect_ftq_idx := RegNext(rob.io.flush.payload.ftq_idx)
-  } elsewhen (brupdate.b2.mispredict && !RegNext(rob.io.flush.valid)) {
+    io.ifu.redirect_ftq_idx := delayed_flush.ftq_idx
+  } elsewhen (brupdate.b2.mispredict && !rob_flush_delayed) {
     val block_pc = AlignPCToBoundary(io.ifu.rrd_ftq_resps(0).pc, icBlockBytes)
     val uop_maybe_pc = block_pc | brupdate.b2.uop.pc_lob.resize(vaddrBitsExtended)
     val npc = uop_maybe_pc + Mux(brupdate.b2.uop.is_rvc || brupdate.b2.uop.edge_inst, U(2, vaddrBitsExtended bits), U(4, vaddrBitsExtended bits))
@@ -545,8 +562,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     decode_units(w).io.enq.uop         := dec_fbundle.uops(w).payload
     decode_units(w).io.status          := csr.io.status
     decode_units(w).io.csr_decode      <> csr.io.decode(w)
-    decode_units(w).io.interrupt       := RegNext(csr.io.interrupt)
-    decode_units(w).io.interrupt_cause := RegNext(csr.io.interrupt_cause)
+    decode_units(w).io.interrupt       := FixedPipeline.delay(csr.io.interrupt, 1)
+    decode_units(w).io.interrupt_cause := FixedPipeline.delay(csr.io.interrupt_cause, 1)
     decode_units(w).io.fcsr_rm         := csr.io.fcsr_rm
 
     dec_uops(w) := decode_units(w).io.deq.uop
@@ -595,7 +612,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
         read_issued = issue_read || read_issued
       }
       req.ready := read_issued
-      alu_exe_units(i).io_rrd_ftq_resps(w) := Mux(RegNext(data_sel(0)),
+      alu_exe_units(i).io_rrd_ftq_resps(w) := Mux(FixedPipeline.delay(data_sel(0), 1),
         io.ifu.rrd_ftq_resps(1), io.ifu.rrd_ftq_resps(2))
     }
   }
@@ -656,7 +673,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   // Branch Mask Logic
 
   dec_brmask_logic.io.brupdate := brupdate
-  dec_brmask_logic.io.flush_pipeline := RegNext(rob.io.flush.valid)
+  dec_brmask_logic.io.flush_pipeline := rob_flush_delayed
 
   for (w <- 0 until coreWidth) {
     dec_brmask_logic.io.is_branch(w) := !dec_finished_mask(w) && dec_uops(w).allocate_brtag
@@ -876,7 +893,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   var bypass_idx = 0
   for (i <- 0 until lsuWidth) {
     int_wakeups(wu_idx) := io.lsu.iwakeups(i)
-    val (raw, killed) = BranchPipeline.writebackTap(io.lsu.iresp(i), brupdate, RegNext(rob.io.flush.valid))
+    val (raw, killed) = BranchPipeline.writebackTap(io.lsu.iresp(i), brupdate, rob_flush_delayed)
     connectResp(rob.io.wb_resps(wb_idx), killed)
     iregfile.io.write_ports(wb_idx).valid        := raw.valid
     iregfile.io.write_ports(wb_idx).payload.addr := raw.payload.uop.pdst
@@ -945,7 +962,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   wu_idx += 1
 
   val ll_wb = FixedPipeline(
-    ll_arb.io.out.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), ll_arb.io.out.payload),
+    ll_arb.io.out.valid && !IsKilledByBranch(brupdate, rob_flush_delayed, ll_arb.io.out.payload),
     ll_arb.io.out.payload, 1, holdPayload = false, resetValid = false)
   connectResp(rob.io.wb_resps(wb_idx), ll_wb)
 
@@ -967,7 +984,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     wu_idx += 1
 
     val alu_wb = FixedPipeline(
-      unit.io_alu_resp.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), unit.io_alu_resp.payload),
+      unit.io_alu_resp.valid && !IsKilledByBranch(brupdate, rob_flush_delayed, unit.io_alu_resp.payload),
       unit.io_alu_resp.payload, 1, holdPayload = false, resetValid = false)
     connectResp(rob.io.wb_resps(wb_idx), alu_wb)
 
@@ -1022,7 +1039,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   for (iss_unit <- Seq(mem_iss_unit, alu_iss_unit, unq_iss_unit)) {
     iss_unit.io.tsc_reg  := debug_tsc_reg
     iss_unit.io.brupdate := brupdate
-    iss_unit.io.flush_pipeline := RegNext(rob.io.flush.valid)
+    iss_unit.io.flush_pipeline := rob_flush_delayed
 
     // Rebusy children of misspeculated wakeups
     iss_unit.io.child_rebusys := alu_exe_units.map(_.io_child_rebusy).reduce(_|_)
@@ -1187,7 +1204,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   io.lsu.commit_load_at_rob_head := rob.io.com_load_is_at_rob_head
 
   //com_xcpt.valid comes too early, will fight against a branch that resolves same cycle as an exception
-  io.lsu.exception := RegNext(rob.io.flush.valid)
+  io.lsu.exception := rob_flush_delayed
 
   // Handle Branch Mispeculations
   io.lsu.brupdate := brupdate
@@ -1240,10 +1257,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   //-------------------------------------------------------------
   // flush on exceptions, miniexeptions, and after some special instructions
 
-  fp_pipeline.io.flush_pipeline := RegNext(rob.io.flush.valid)
+  fp_pipeline.io.flush_pipeline := rob_flush_delayed
 
   for (eu <- all_exe_units)
-    eu.io_kill := RegNext(rob.io.flush.valid)
+    eu.io_kill := rob_flush_delayed
 
   assert (!(rob.io.com_xcpt.valid && !rob.io.flush.valid),
     "[core] exception occurred, but pipeline flush signal not set!")

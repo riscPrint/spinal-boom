@@ -2,6 +2,7 @@ package boom.system
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.{Builder, Node, StageLink}
 import spinal.lib.bus.tilelink
 
 import rocketchip.config.Parameters
@@ -45,7 +46,15 @@ class BoomSimTop(resetVector: BigInt, rvfiMonitorDir: Option[String] = None, kon
   // rocket's I$ may withdraw a.valid before the beat is accepted (s2_kill). rocket-chip's
   // TLArbiter tolerates that, but Spinal's Arbiter locks onto a stalled requester, so it
   // would then wait on the I$ forever. A register slice keeps the request stable once taken.
-  arbiter.io.ups(1).a << tile.io.imem.a.m2sPipe()
+  // One ready-connected StageLink: m2sPipe() exactly (valid reset, capture on up.ready,
+  // bubble collapse, no payload hold).
+  val imemSlice = new Area {
+    val up, down = Node()
+    up.arbitrateFrom(tile.io.imem.a)
+    val A = up.insert(tile.io.imem.a.payload)
+    down.driveTo(arbiter.io.ups(1).a)((a, n) => a := n(A))
+    Builder(StageLink(up, down))
+  }
   tile.io.imem.d << arbiter.io.ups(1).d
   io.mem << arbiter.io.down
 

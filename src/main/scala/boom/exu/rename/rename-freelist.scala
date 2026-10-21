@@ -74,7 +74,7 @@ class RenameFreeList(
   val sel_mask = (sels zip sel_fire) map { case (s,f) => s & Fill(n,f) } reduce(_|_)
 
   val br_deallocs = br_alloc_lists.at(io.brupdate.b2.uop.br_tag) & Fill(n, io.brupdate.b2.mispredict)
-  val com_deallocs = RegNext(io.dealloc).map(d => UIntToOH(d.payload, n) & Fill(n,d.valid)).reduce(_|_)
+  val com_deallocs = FixedPipeline.delay(io.dealloc, 1).map(d => UIntToOH(d.payload, n) & Fill(n,d.valid)).reduce(_|_)
   val rollback_deallocs = spec_alloc_list & Fill(n, io.rollback)
   val dealloc_mask = com_deallocs | br_deallocs | rollback_deallocs
 
