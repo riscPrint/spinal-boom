@@ -210,7 +210,17 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
 
   val bpd_idx = Mux(io.redirect.valid, io.redirect.payload,
     Mux(bpd_update_repair || bpd_update_mispredict, bpd_repair_idx, bpd_ptr))
-  val bpd_entry = RegNext(ram(bpd_idx))
+  val bpd_any = Bool()
+  val bpdRead = new Bundle {
+    val entry = new FTQBundle
+    val pc = UInt(vaddrBitsExtended bits)
+    val target = UInt(vaddrBitsExtended bits)
+  }
+  bpdRead.entry := ram(bpd_idx)
+  bpdRead.pc := pcs(bpd_idx)
+  bpdRead.target := pcs(WrapInc(bpd_idx, num_entries))
+  val bpdRd = FixedPipeline(bpd_any, bpdRead, 1, holdPayload = false, resetValid = false)
+  val bpd_entry = bpdRd.payload.entry
   val bpd_ghist = ghist(0).read(bpd_idx, True)
   val bpd_lhist = if (useLHist) {
     lhist.get.read(bpd_idx, True)
@@ -218,8 +228,8 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
     Vec.fill(nBanks)(U(0, localHistoryLength bits))
   }
   val bpd_meta  = meta.read(bpd_idx, True) // TODO fix these SRAMs
-  val bpd_pc    = RegNext(pcs(bpd_idx))
-  val bpd_target = RegNext(pcs(WrapInc(bpd_idx, num_entries)))
+  val bpd_pc    = bpdRd.payload.pc
+  val bpd_target = bpdRd.payload.target
 
   when (io.redirect.valid) {
     bpd_update_mispredict := False
@@ -252,7 +262,8 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
   val do_mispredict_update = bpd_update_mispredict
   val do_repair_update     = bpd_update_repair
 
-  when (RegNext(do_commit_update || do_repair_update || do_mispredict_update)) {
+  bpd_any := do_commit_update || do_repair_update || do_mispredict_update
+  when (bpdRd.valid) {
     val cfi_idx = bpd_entry.cfi_idx.payload
     val valid_repair = bpd_pc =/= bpd_repair_pc
 

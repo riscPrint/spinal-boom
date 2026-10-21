@@ -406,3 +406,17 @@ delay-mode placement, refill address capture and refill state remain unchanged.
 Validation for this commit: quick (255 runs) and extra (170 runs) completed with zero
 differences against the original inputs. The BoomFrontend elaboration spec passed.
 Retained gated-register names match the original extra-config RTL inventory.
+
+The FTQ predictor-update read now carries entry, PC and target in one
+unconditional FixedPipeline stage with an uninitialised valid. Synchronous
+history/local-history/meta read results connect directly at that same age,
+without another register. Repair/redirect FSM state, the delayed enqueue-ready,
+RAS/read-port registers and all downstream-enable-gated qualifiers stay
+hand-written with their original names. No custom Link is needed in this slice.
+
+Validation for the final commit: quick (255 runs), extra (170 runs) and
+full (1,655 runs) completed with zero differences against the original inputs.
+ElabSpec, BoomElabSpec, PipelineSpec and BranchPipelineSpec passed. The
+probe-disabled RiscvTestsSpec branch/jalr/fence.i smoke and VmTestsSpec passed.
+All retained gated-register names match the original extra-config RTL inventory.
+The final spec runs hold the machine-wide boom lock.
