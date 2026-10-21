@@ -458,3 +458,14 @@ indices override the RRD bypass before that boundary. Builder runs after the
 trait/subclass constructors, and the existing arb/rrd/exe Flow names remain
 register-output views. AGEN and the step-2 response/wakeup/data flows retain
 their existing independent stages. Issue queues and bypass logic are unchanged.
+
+
+Core dispatch+1 uses unconditional, uninitialised `FixedPipeline` stages for
+immediate/branch-file writes and the early system-instruction FTQ commit. The
+latter retains its different fire/valid priority encoders. Integer LSU writeback
+uses `writebackTap`: the register file and bypass see raw delayed valid/data/uop;
+the ROB alone sees killed valid and a resolved-mask update. Long-latency and ALU
+ROB notifications use killed-valid `FixedPipeline` flows with deliberately raw
+payloads. Existing registered ROB-flush inputs and all combinational writeback,
+wakeup and dispatch control stay at their original cycles. The commit trace
+and Konata observation ports are untouched.

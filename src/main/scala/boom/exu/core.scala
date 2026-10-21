@@ -801,9 +801,12 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   // Minor hack: ecall and breaks need to increment the FTQ deq ptr earlier than commit, since
   // they write their PC into the CSR the cycle before they commit.
   // Since these are also unique, increment the FTQ ptr when they are dispatched
-  when (RegNext(dis_fire.reduce(_||_) && dis_uops.at(PriorityEncoder(dis_fire)).is_sys_pc2epc)) {
+  val dispatched_sys = FixedPipeline(
+    dis_fire.reduce(_||_) && dis_uops.at(PriorityEncoder(dis_fire)).is_sys_pc2epc,
+    dis_uops.at(PriorityEncoder(dis_valids)).ftq_idx, 1, holdPayload = false, resetValid = false)
+  when (dispatched_sys.valid) {
     io.ifu.commit.valid   := True
-    io.ifu.commit.payload := RegNext(dis_uops.at(PriorityEncoder(dis_valids)).ftq_idx).resized
+    io.ifu.commit.payload := dispatched_sys.payload.resized
   }
 
   for (w <- 0 until coreWidth) {
@@ -846,13 +849,14 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   //-------------------------------------------------------------
   // Write immediates, branches into immediate file
   for (w <- 0 until coreWidth) {
-    val uop = RegNext(dis_uops(w))
+    val dispatched = FixedPipeline(dis_fire(w), dis_uops(w), 1, holdPayload = false, resetValid = false)
+    val uop = dispatched.payload
 
-    immregfile.io.write_ports(w).valid        := RegNext(dis_fire(w)) && !uop.imm_sel.isOneOf(IS_N, IS_SH)
+    immregfile.io.write_ports(w).valid        := dispatched.valid && !uop.imm_sel.isOneOf(IS_N, IS_SH)
     immregfile.io.write_ports(w).payload.addr := uop.pimm.resized
     immregfile.io.write_ports(w).payload.data := uop.imm_packed
 
-    bregfile.io.write_ports(w).valid                 := RegNext(dis_fire(w)) && uop.allocate_brtag
+    bregfile.io.write_ports(w).valid                 := dispatched.valid && uop.allocate_brtag
     bregfile.io.write_ports(w).payload.addr          := uop.br_tag.resized
     bregfile.io.write_ports(w).payload.data.ldq_idx  := uop.ldq_idx
     bregfile.io.write_ports(w).payload.data.stq_idx  := uop.stq_idx
@@ -870,13 +874,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   var bypass_idx = 0
   for (i <- 0 until lsuWidth) {
     int_wakeups(wu_idx) := io.lsu.iwakeups(i)
-    connectResp(rob.io.wb_resps(wb_idx), RegNext(UpdateBrMask(brupdate, RegNext(rob.io.flush.valid), io.lsu.iresp(i))))
-    iregfile.io.write_ports(wb_idx).valid        := RegNext(io.lsu.iresp(i).valid)
-    iregfile.io.write_ports(wb_idx).payload.addr := RegNext(io.lsu.iresp(i).payload.uop.pdst)
-    iregfile.io.write_ports(wb_idx).payload.data := RegNext(io.lsu.iresp(i).payload.data)
+    val (raw, killed) = BranchPipeline.writebackTap(io.lsu.iresp(i), brupdate, RegNext(rob.io.flush.valid))
+    connectResp(rob.io.wb_resps(wb_idx), killed)
+    iregfile.io.write_ports(wb_idx).valid        := raw.valid
+    iregfile.io.write_ports(wb_idx).payload.addr := raw.payload.uop.pdst
+    iregfile.io.write_ports(wb_idx).payload.data := raw.payload.data
 
-    int_bypasses(bypass_idx).valid   := RegNext(io.lsu.iresp(i).valid)
-    int_bypasses(bypass_idx).payload := RegNext(io.lsu.iresp(i).payload)
+    int_bypasses(bypass_idx) := raw
     wu_idx += 1
     wb_idx += 1
     bypass_idx += 1
@@ -938,11 +942,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   int_wakeups(wu_idx).payload.bypassable := False
   wu_idx += 1
 
-  rob.io.wb_resps(wb_idx).valid           := RegNext(ll_arb.io.out.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), ll_arb.io.out.payload))
-  rob.io.wb_resps(wb_idx).payload.uop        := RegNext(ll_arb.io.out.payload.uop)
-  rob.io.wb_resps(wb_idx).payload.data       := RegNext(ll_arb.io.out.payload.data).resized
-  rob.io.wb_resps(wb_idx).payload.predicated := RegNext(ll_arb.io.out.payload.predicated)
-  rob.io.wb_resps(wb_idx).payload.fflags     := RegNext(ll_arb.io.out.payload.fflags)
+  val ll_wb = FixedPipeline(
+    ll_arb.io.out.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), ll_arb.io.out.payload),
+    ll_arb.io.out.payload, 1, holdPayload = false, resetValid = false)
+  connectResp(rob.io.wb_resps(wb_idx), ll_wb)
 
   iregfile.io.write_ports(wb_idx).valid        := ll_arb.io.out.valid && ll_arb.io.out.payload.uop.dst_rtype === RT_FIX
   iregfile.io.write_ports(wb_idx).payload.addr := ll_arb.io.out.payload.uop.pdst
@@ -961,8 +964,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     int_wakeups(wu_idx) := fast_wakeup
     wu_idx += 1
 
-    connectResp(rob.io.wb_resps(wb_idx), RegNext(unit.io_alu_resp))
-    rob.io.wb_resps(wb_idx).valid  := RegNext(unit.io_alu_resp.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), unit.io_alu_resp.payload))
+    val alu_wb = FixedPipeline(
+      unit.io_alu_resp.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), unit.io_alu_resp.payload),
+      unit.io_alu_resp.payload, 1, holdPayload = false, resetValid = false)
+    connectResp(rob.io.wb_resps(wb_idx), alu_wb)
 
     iregfile.io.write_ports(wb_idx).valid        := unit.io_alu_resp.valid && unit.io_alu_resp.payload.uop.dst_rtype === RT_FIX
     iregfile.io.write_ports(wb_idx).payload.addr := unit.io_alu_resp.payload.uop.pdst
