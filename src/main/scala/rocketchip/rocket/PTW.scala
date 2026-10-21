@@ -242,17 +242,24 @@ class PTW(n: Int)(implicit p: Parameters) extends CoreModule()(p) {
   val max_count = Mux(count > aux_count, count, aux_count)
   val vpn = Mux(r_req.vstage1 && stage2, aux_pte.ppn, r_req.addr.resize(aux_pte.ppn.getWidth))
 
-  val mem_resp_valid = RegNext(io.mem.resp.valid)
-  val mem_resp_data = RegNext(io.mem.resp.payload.data)
+  // Memory response: select cached/uncached, then one unconditional stage
+  // with an uninitialised valid.
+  val mem_resp_in = Flow(cloneOf(io.mem.resp.payload.data))
+  mem_resp_in.valid := io.mem.resp.valid
+  mem_resp_in.payload := io.mem.resp.payload.data
   if (io.mem.uncached_resp != null) {
     val resp = io.mem.uncached_resp
     assert(!(resp.valid && io.mem.resp.valid))
     resp.ready := True
     when(resp.valid) {
-      mem_resp_valid := True
-      mem_resp_data := resp.payload.data
+      mem_resp_in.valid := True
+      mem_resp_in.payload := resp.payload.data
     }
   }
+  val mem_resp = FixedPipeline(mem_resp_in.valid, mem_resp_in.payload, 1,
+    holdPayload = false, resetValid = false)
+  val mem_resp_valid = mem_resp.valid
+  val mem_resp_data = mem_resp.payload
   // construct pte from mem.resp
   val (pte, invalid_paddr, invalid_gpa) = {
     val tmp = ChiselLayout.fromUInt(new PTE(), mem_resp_data)

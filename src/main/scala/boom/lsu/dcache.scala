@@ -66,11 +66,15 @@ class BoomWritebackUnit(implicit p: Parameters) extends L1HellaCacheModule()(p) 
   val s_active      = U(3, 3 bits)
   val s_grant       = U(4, 3 bits)
   val state = Reg(UInt(3 bits)) init s_invalid
-  val r1_data_req_fired = Reg(Bool()) init False
-  val r2_data_req_fired = Reg(Bool()) init False
-  val r1_data_req_cnt = Reg(UInt(log2UpChisel(refillCycles+1) bits))
-  val r2_data_req_cnt = Reg(UInt(log2UpChisel(refillCycles+1) bits))
   val data_req_cnt = Reg(UInt(log2UpChisel(refillCycles+1) bits)) init 0
+  // Read tags: two stages that advance only while filling the buffer. The
+  // fired valid resets to false; the first stage clears its count on no request.
+  val filling = state === s_fill_buffer
+  val data_req_fired = io.data_req.fire && io.meta_read.fire
+  val r2_data_req = GatedPipeline.flow(data_req_fired,
+    Mux(data_req_fired, data_req_cnt, U(0, data_req_cnt.getWidth bits)), filling, 2)
+  val r2_data_req_fired = r2_data_req.valid
+  val r2_data_req_cnt = r2_data_req.payload
   val (_, last_beat, all_beats_done, beat_count) = edge.count(io.release)
   val wb_buffer = Reg(Vec.fill(refillCycles)(UInt(encRowBits bits)))
   val acked = Reg(Bool()) init False
@@ -123,13 +127,7 @@ class BoomWritebackUnit(implicit p: Parameters) extends L1HellaCacheModule()(p) 
                               Cat(req.idx, data_req_cnt(log2UpChisel(refillCycles)-1 downto 0)).asUInt
                             else req.idx) << rowOffBits).resized
 
-    r1_data_req_fired := False
-    r1_data_req_cnt   := 0
-    r2_data_req_fired := r1_data_req_fired
-    r2_data_req_cnt   := r1_data_req_cnt
-    when (io.data_req.fire && io.meta_read.fire) {
-      r1_data_req_fired := True
-      r1_data_req_cnt   := data_req_cnt
+    when (data_req_fired) {
       data_req_cnt := data_req_cnt + 1
     }
     when (r2_data_req_fired) {

@@ -44,3 +44,52 @@ object FixedPipeline {
     result
   }
 }
+
+/** Enabled registers, q' = enable ? d : q, as data-only StageLinks whose down ready
+  * is the enable. Use these only for a register declared outside a `when` and
+  * assigned inside it. In SpinalHDL a `RegNext`/`RegNextWhen` declared inside a
+  * `when` (or `switch`, or a condition) is NOT gated by it: that is a free-running
+  * `FixedPipeline.delay`.
+  *
+  * Each stage has its own node pair, because a StageLink drives up.ready :=
+  * down.ready and would give a whole chain the last enable. Stages are built
+  * outside the caller's conditional scope, so pass the complete enable.
+  */
+object GatedPipeline {
+  /** Data only: no valid, reset or backpressure. Stage i captures under enables(i). */
+  def delay[T <: Data](data: T, enables: Seq[Bool]): T =
+    enables.foldLeft(data)((d, e) => stage(None, d, e)._2)
+
+  def delay[T <: Data](data: T, enable: Bool, latency: Int): T = {
+    require(latency >= 0)
+    delay(data, Seq.fill(latency)(enable))
+  }
+
+  /** As delay, plus a valid that resets to false and captures under the same enable. */
+  def flow[T <: Data](valid: Bool, data: T, enables: Seq[Bool]): Flow[T] = {
+    val (v, d) = enables.foldLeft((valid, data)) { case ((v, d), e) =>
+      val (nv, nd) = stage(Some(v), d, e)
+      (nv.get, nd)
+    }
+    val result = Flow(cloneOf(data))
+    result.valid := v
+    result.payload := d
+    result
+  }
+
+  def flow[T <: Data](valid: Bool, data: T, enable: Bool, latency: Int): Flow[T] = {
+    require(latency >= 0)
+    flow(valid, data, Seq.fill(latency)(enable))
+  }
+
+  private def stage[T <: Data](valid: Option[Bool], data: T, enable: Bool): (Option[Bool], T) =
+    ContextSwapper.outsideCondScope {
+      val up, down = Node()
+      valid.foreach(up.valid := _)
+      val payload = up.insert(data)
+      down.ready := enable
+      val result = (valid.map(_ => down.valid), down(payload))
+      Builder(StageLink(up, down).withoutCollapse())
+      result
+    }
+}

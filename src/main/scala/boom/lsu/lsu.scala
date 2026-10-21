@@ -491,8 +491,8 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   // The block_load_mask may be wrong, but the executing_load mask must be accurate
   val block_load_mask    = Vec.fill(numLdqEntries)(Bool())
   block_load_mask.foreach(_ := False)
-  val p1_block_load_mask = RegNext(block_load_mask)
-  val p2_block_load_mask = RegNext(p1_block_load_mask)
+  val p1_block_load_mask = FixedPipeline.delay(block_load_mask, 1)
+  val p2_block_load_mask = FixedPipeline.delay(p1_block_load_mask, 1)
 
   // Prioritize emptying the store queue when it is almost full
   val stq_tail_plus   = WrapAddWCarryWidth(stq_tail, U(2*coreWidth), 2*numStqEntries, (1+stqAddrSz))
@@ -501,6 +501,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   // The store at the commit head needs the DCache to appear ordered
   // Delay firing load wakeups and retries now
   val store_needs_order = CombInit(False)
+  val prev_store_needs_order = FixedPipeline.delay(store_needs_order, 1)
 
   val ldq_incoming_idx = widthMap(i => agen(i).payload.uop.ldq_idx)
   val ldq_incoming_e   = widthMap(i => CombInit(ldq_read(ldq_incoming_idx(i))))
@@ -606,7 +607,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   val can_fire_load_retry    = widthMap(w =>
                                ( retry_queue.io.deq.valid                     &&
                                  retry_queue.io.deq.payload.uop.uses_ldq      &&
-                                !RegNext(store_needs_order)                   &&
+                                !prev_store_needs_order                    &&
                                 Bool(w == lsuWidth-1)))
 
   // Can we retry a store addrgen that missed in the TLB
@@ -634,7 +635,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
                               !ldq_wakeup_e.payload.order_fail                         &&
                               !p1_block_load_mask.at(ldq_wakeup_idx)                   &&
                               !p2_block_load_mask.at(ldq_wakeup_idx)                   &&
-                              !RegNext(store_needs_order)                              &&
+                              !prev_store_needs_order                               &&
                               !block_load_wakeup                                       &&
                               Bool(w == lsuWidth-1)                                    &&
                               (!ldq_wakeup_e.payload.addr_is_uncacheable || (io.core.commit_load_at_rob_head &&
@@ -2066,23 +2067,22 @@ class ForwardingAgeLogic(n: Int) extends Component
   matches := Cat(io.matches & age_mask.asUInt,
                  io.matches).asUInt
 
-  val found_match = Reg(Bool())
-  val found_idx = Reg(UInt(log2Ceil(n) bits))
-  found_match       := False
-  found_idx         := 0
+  // look for youngest, approach from the oldest side, let the last one found stick
+  val found_match_next = CombInit(False)
+  val found_idx_next = CombInit(U(0, log2Ceil(n) bits))
+  for (i <- 0 until (2*n))
+  {
+    when (matches(i))
+    {
+      found_match_next := True
+      found_idx_next := i % n
+    }
+  }
 
-  io.found_idx := found_idx
-  io.found := found_match
-
-   // look for youngest, approach from the oldest side, let the last one found stick
-   for (i <- 0 until (2*n))
-   {
-      when (matches(i))
-      {
-         found_match := True
-         found_idx := i % n
-      }
-   }
+  // The result is one unconditional stage with an uninitialised valid.
+  val found = FixedPipeline(found_match_next, found_idx_next, 1, holdPayload = false, resetValid = false)
+  io.found_idx := found.payload
+  io.found := found.valid
 }
 
 object GetRealLSQIdx{
@@ -2161,12 +2161,9 @@ object IsOlderLSU {
   }
 }
 
+/** One unconditional, uninitialised data stage. */
 object SafeRegNext{
-  def apply[T <: Data](x: T): T = {
-    val reg = Reg(cloneOf(x))
-    reg := x
-    reg
-  }
+  def apply[T <: Data](x: T): T = FixedPipeline.delay(x, 1)
 }
 
 object EntryValidFromAge {

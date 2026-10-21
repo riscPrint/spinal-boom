@@ -171,6 +171,22 @@ connects only payloads read downstream. Construct all consumers before calling
   ready signals. `FixedPipeline.delay` carries data only and adds no valid or reset
   registers. For an uninitialised valid, `resetValid = false` removes the init
   assignments from the StageLink-generated valid registers after `Builder`.
+* Spinal's `when` gates only signals declared outside it. A `RegNext` or
+  `RegNextWhen` declared inside a `when` body, a nested `when` condition or a
+  `switch`/`is` branch captures every cycle (`RegNextWhen` only under its own
+  enable), so it converts to a free-running stage, not a gated one. Only a `Reg`
+  declared outside and assigned inside `when(E)` is q' = E ? x : q. The
+  generated Verilog of `0cb0b69` confirms this for every site below, and
+  `rocketchip.GatedPipelineSpec` pins it down.
+* `rocketchip.util.GatedPipeline` builds those enabled registers. Each stage is a
+  data-only StageLink with `withoutCollapse()` and down ready tied to its enable,
+  so payload captures only under the enable; there is no valid, reset or
+  backpressure. Every stage has its own node pair, because a StageLink drives
+  `up.ready := down.ready` and one chain would take its last enable. `flow` adds a
+  node valid that resets to false and captures under the same enable. Stages
+  build outside the caller's conditional scope, so callers pass the full enable.
+  Its spec compares multi-stage, shared-enable, mixed-enable, in-`when` and flow
+  cases against plain `when(E) { q := x }` registers and checks the RTL.
 * `boom.util.BranchPipeline.boundary` is a `CtrlLink` before a `StageLink`.
   `terminateWhen` kills using the OLD mask and flush; `bypass(REQ)` clears resolved
   mask bits in the value crossing the register. Thus next valid is
@@ -306,16 +322,19 @@ valid-way and global-way vectors enter at s1 and capture into s2 only when s1
 valid is true. Constant ready and withoutCollapse preserve both bubble timing
 and payload hold. RAMs, replacement/valid state, pte_hit/l2_refill pulse state and
 r_valid_vec_q/r_l2_plru_way remain unchanged. The optional standalone PTW memory
-response delay remains hand-written: its uncached-response override also writes
-the registers, so replacing it with an output Flow would change that behavior.
+response delay selects the uncached response over the cached one before one
+unconditional FixedPipeline stage with no valid reset, which is what the
+original override of the registers' next value did.
 
-The optional writeback-unit read tags remain hand-written. Both stages have an
-FSM-dependent common enable and explicit first-stage clearing on no request;
-using ready as that FSM enable would obscure the existing six assignments.
-HellaCacheArbiter's priority-written requester IDs remain unchanged; BOOM uses
-one requester and does not elaborate the multi-requester branch. LSU block-load
-masks, store-needs-order delays, registered encoders, hella FSM, queue/CAM state
-and ForwardingAgeLogic also retain their hand-written implementations.
+The writeback-unit read tags are the one truly enabled chain here: two
+`GatedPipeline.flow` stages under `state === s_fill_buffer`, with the fired valid
+resetting to false and the first-stage count cleared on no request.
+HellaCacheArbiter's requester ID is priority-selected at s0, then two
+unconditional data stages (multi-requester only; BOOM elaborates one requester).
+ForwardingAgeLogic keeps its CAM compares and last-match priority and registers
+the result in one unconditional stage. The LSU block-load masks, store-needs-order
+delay and `SafeRegNext` (now `FixedPipeline.delay`) are unconditional stages.
+The hella FSM and queue/CAM state stay hand-written.
 
 `MemoryPipelineSpec` retains the e101625 banked array as a test reference and
 compares data and nacks through bank sharing, conflicts and masked writes under
@@ -343,16 +362,13 @@ response and update ages now use payloads on the base links. Loop columns
 have their own fixed-flow links. TAGE tables reuse the base F1 PC and valid.
 Memory read-port registers and SRAM result alignment remain hand-written.
 
-Upstream enable-gated RegNexts remain verbatim, including their names:
-BTB response/is_br/is_jal data under F2/F3 hit conditions, SlowBTB target data
-under its F3 hit, local history's three-index shift under f3_fire, the four
-two-bank predictor history captures, FTQ repair/end-index captures, FTQ
-repair/mispredict qualifiers under the delayed update enable, and FTQ redirect
-write-back captures. Their enables belong to a later age. A free-running link
-or payload-hold link would change their behavior. This retains stale targets
-on the first BTB hit after a miss and stale two-bank history after a bank
-switch, as upstream does. These are candidate upstream issues, not fixes in
-this refactor.
+The BTB response, is_br/is_jal and both F3 is_jal chains, the SlowBTB target,
+local history's three-stage fetch index, the four two-bank history captures and
+the FTQ repair/redirect/update-kind delays were `RegNext`s declared inside their
+hit, fire or FSM branches. Spinal does not gate those (see above), so they were
+free-running in `0cb0b69` and are now free-running stages: `predAt` on the bank
+links, the predictor response ages, or `FixedPipeline`. Earlier revisions of these
+notes called them enable-gated; the generated Verilog shows otherwise.
 
 Validation for this commit: quick (255 runs) and extra (170 runs) completed with zero
 differences against the original inputs. The BoomFrontend elaboration spec passed.
@@ -363,8 +379,8 @@ GuBTB's unaligned request tag/update PC and metadata, and SlowBTB metadata,
 request tag and hit condition now use the shared prediction/update links.
 Local history uses FixedPipeline.delay for its existing two-stage read-result
 chain and one-stage update. HBIM and Tourney need only the converted base
-ages; their extra register is part of the SRAM read port. The gated SlowBTB
-target and local-history index registers remain verbatim.
+ages; their extra register is part of the SRAM read port. The SlowBTB
+target and local-history index also convert (see above).
 
 Validation for this commit: quick (255 runs) and extra (170 runs) completed with zero
 differences against the original inputs. The BoomFrontend elaboration spec passed.
@@ -373,8 +389,7 @@ Retained gated-register names match the original extra-config RTL inventory.
 The predictor top now carries response PC, the single-bank F1 history,
 the two-bank selection condition and per-bank F3-fire valid qualifiers on
 four fixed-flow payload ages. No node valid, reset or ready is introduced.
-The four two-bank history registers retain their downstream enables and
-names. Composed banks remain combinational at F1, F2 and F3; no links cross
+The four two-bank histories ride the response ages too; F1 bank selection picks them.
 between the FA2/BIM/BTB/TAGE/loop components.
 
 Validation for this commit: quick (255 runs) and extra (170 runs)
@@ -410,9 +425,11 @@ Retained gated-register names match the original extra-config RTL inventory.
 The FTQ predictor-update read now carries entry, PC and target in one
 unconditional FixedPipeline stage with an uninitialised valid. Synchronous
 history/local-history/meta read results connect directly at that same age,
-without another register. Repair/redirect FSM state, the delayed enqueue-ready,
-RAS/read-port registers and all downstream-enable-gated qualifiers stay
-hand-written with their original names. No custom Link is needed in this slice.
+without another register. Repair/redirect FSM state stays hand-written. The RAS
+update is a one-stage FixedPipeline transaction without payload hold or valid
+reset; the repair inputs, update-kind qualifiers, redirect write-back staging,
+enqueue-ready, read-port responses and commit/debug PCs are unconditional
+stages. No custom Link is needed in this slice.
 
 Validation for the final commit: quick (255 runs), extra (170 runs) and
 full (1,655 runs) completed with zero differences against the original inputs.
@@ -483,9 +500,11 @@ The core's three-cycle CSR exception-vector delay uses data-only StageLinks via
 unconditional one-cycle flow without reset; retire and encoded trap-value delays
 are unconditional data-only stages. Encoding remains before the trap-value
 register and the existing current-cycle FTQ PC alignment remains after it.
-The separate ROB-flush flag delays are kept at their existing sites: deduplicating
-these single flags is optional and adds no transaction-chain coverage. The
-hand-written commit-trace and RVFI observation paths are unchanged.
+The ROB-flush flag delays share one data-only stage, and the delayed flush type,
+PC fragments and FTQ index share another; all of them captured every cycle in
+`0cb0b69` (their RegNexts were declared inside the flush branches, which does
+not gate them), as did the three-cycle CSR vector. The hand-written commit-trace
+and RVFI observation paths are unchanged.
 
 
 ROB exception timing uses a data-only StagePipeline with one- and two-cycle
@@ -496,3 +515,25 @@ without reset; the priority of the one-cycle match over the two-cycle match is
 unchanged. The memory itself, ROB entry arrays, head/tail/state/exception storage,
 commit scan and rollback logic stay hand-written. The output load-at-head flag
 uses an unconditional data-only delay at its original single-cycle position.
+
+
+Step 7 audit. A static audit read five sites as enables dropped by earlier
+conversions: the three-cycle CSR vector under the flush and CSR-vector branches,
+the early system-instruction FTQ index under its delayed valid, the LSU
+request-fire delay under each LDQ/nack/store hazard branch, the
+load-to-store forwarding store index under its success branch, and the ROB
+FSM's two-cycle exception chains under s_normal and s_wait_till_empty. All five
+`RegNext`s are declared inside those branches, so the `0cb0b69` RTL captures
+them every cycle (the CSR vector `RegNextWhen`s only under their constant
+enable). The converted free-running stages were already exact; restoring
+enables would instead stall them while the ROB sits in s_reset and expose
+Verilator's name-seeded initial values, which failed `rv64mi-p-csr` at once.
+They are unchanged.
+
+The same rule turned the remaining "enable-gated" frontend sites into
+free-running stages (above). Remaining hand-written registers are state or
+outside this work: queues, FSM/pointer/counter state, rename and ROB storage,
+SRAM read-port and alignment registers (BIM, HBIM, Tourney, I-cache arrays,
+RAS read bypass), PTW replacement snapshots, the local-history write command,
+assertion-only delays, and the commit trace, RVFI and Konata observation paths.
+The unused `ShiftRegister`, `holdUnless` and `readAndHold` helpers are removed.
