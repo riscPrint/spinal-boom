@@ -396,3 +396,13 @@ F1, followed by one F2 register capture; there is no node-ready path.
 Validation for this commit: quick (255 runs) and extra (170 runs) and full (1,655 runs) completed with zero
 differences against the original inputs. The BoomFrontend elaboration spec passed.
 Retained gated-register names match the original extra-config RTL inventory.
+
+The I-cache uses two StageLinks for S0/S1/S2 valid and the bank, hit and
+tag-hit ages. A CtrlLink terminates on s1_kill before S2, retaining reset-valid
+and unconditional payload capture. Request ready remains the refill-beat gate,
+with no ready connection into the links. Registered SRAM outputs/addresses,
+delay-mode placement, refill address capture and refill state remain unchanged.
+
+Validation for this commit: quick (255 runs) and extra (170 runs) completed with zero
+differences against the original inputs. The BoomFrontend elaboration spec passed.
+Retained gated-register names match the original extra-config RTL inventory.
