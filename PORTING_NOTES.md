@@ -335,3 +335,25 @@ The bank-base commit passed quick (255 runs), extra (170 runs) and full
 (1,655 runs) against the unchanged recorded inputs with zero differences.
 ElabSpec and BoomElabSpec passed; retained gated-register names match the
 pre-change extra-config RTL inventory.
+
+Frontend step 4, gate-preset banks: BIM column selection, F3 taken and
+metadata; BTB metadata and hit-condition ages; FA2 micro-BTB response ages;
+loop-column F2/F3/F4 ages and bank fire qualifiers; and TAGE selection,
+response and update ages now use payloads on the base links. Loop columns
+have their own fixed-flow links. TAGE tables reuse the base F1 PC and valid.
+Memory read-port registers and SRAM result alignment remain hand-written.
+
+Upstream enable-gated RegNexts remain verbatim, including their names:
+BTB response/is_br/is_jal data under F2/F3 hit conditions, SlowBTB target data
+under its F3 hit, local history's three-index shift under f3_fire, the four
+two-bank predictor history captures, FTQ repair/end-index captures, FTQ
+repair/mispredict qualifiers under the delayed update enable, and FTQ redirect
+write-back captures. Their enables belong to a later age. A free-running link
+or payload-hold link would change their behavior. This retains stale targets
+on the first BTB hit after a miss and stale two-bank history after a bank
+switch, as upstream does. These are candidate upstream issues, not fixes in
+this refactor.
+
+Validation for this commit: quick (255 runs) and extra (170 runs) completed with zero
+differences against the original inputs. The BoomFrontend elaboration spec passed.
+Retained gated-register names match the original extra-config RTL inventory.

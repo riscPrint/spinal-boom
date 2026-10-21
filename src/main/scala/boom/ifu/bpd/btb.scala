@@ -46,7 +46,7 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
   }
 
   val s1_meta = BTBPredictMeta()
-  val f3_meta = RegNext(RegNext(s1_meta))
+  val f3_meta = predAt(s1_meta, 1, 3)
 
   io.f3_meta := f3_meta.asBits.asUInt.resized
 
@@ -76,6 +76,7 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
     })
   })
   val s1_hits     = s1_hit_ohs.map { oh => oh.reduce(_||_) }
+  val HITS = pred(1).insert(Vec(s1_hits))
   val s1_hit_ways = s1_hit_ohs.map { oh => PriorityEncoder(oh) }
   val s1_targs    = Vec.fill(nWays)(Vec.fill(bankWidth)(UInt(vaddrBitsExtended bits)))
   for (w <- 0 until bankWidth) {
@@ -95,7 +96,7 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
     io.resp.f1(w) := io.resp_in(0).f1(w)
     io.resp.f2(w) := io.resp_in(0).f2(w)
     io.resp.f3(w) := io.resp_in(0).f3(w)
-    when (RegNext(s1_hits(w))) {
+    when (pred(2)(HITS)(w)) {
       io.resp.f2(w).predicted_pc := RegNext(s1_resp(w))
       io.resp.f2(w).is_br        := RegNext(s1_is_br(w))
       io.resp.f2(w).is_jal       := RegNext(s1_is_jal(w))
@@ -103,7 +104,7 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
         io.resp.f2(w).taken      := True
       }
     }
-    when (RegNext(RegNext(s1_hits(w)))) {
+    when (pred(3)(HITS)(w)) {
       io.resp.f3(w).predicted_pc := RegNext(io.resp.f2(w).predicted_pc)
       io.resp.f3(w).is_br        := RegNext(io.resp.f2(w).is_br)
       io.resp.f3(w).is_jal       := RegNext(io.resp.f2(w).is_jal)
