@@ -444,3 +444,17 @@ captures every cycle without reset. Allocation bypass and branch-mask rewriting
 remain after the hold/input mux, in the abstract constructor, preserving the
 existing `RenameStage.int` construction-order quirk. Rename tables, freelists,
 busy tables and predicate history remain hand-written state.
+
+
+Execution units carry the ISS/ARB/RRD/EXE uop through three registered links.
+ISS, ARB and RRD CtrlLinks kill from the old branch mask and rewrite resolved
+bits. ARB uses `HoldStageLink(resetValid = false)`: replay holds its payload,
+clears bypass hints, drains valid on kill/rebusy and bubbles RRD. There is no
+flush-select on this link, so a non-replayed killed issue still supplies its
+payload. Invalid ARB payloads remain observable by the ungated rebusy compares.
+The two later StageLinks capture unconditionally, with valid init removed.
+IRF/FRF operands, immediate, predicate and FTQ data share RRD to EXE; the BRF
+indices override the RRD bypass before that boundary. Builder runs after the
+trait/subclass constructors, and the existing arb/rrd/exe Flow names remain
+register-output views. AGEN and the step-2 response/wakeup/data flows retain
+their existing independent stages. Issue queues and bypass logic are unchanged.
