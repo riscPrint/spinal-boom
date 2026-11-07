@@ -1283,6 +1283,14 @@ of a write to `mtime`. BOOM emulates `time` in software. The measured gap
 is 687 ticks. Section 3.2.1 gives no such latency bound. The test needs a
 platform-dependent bound; the core must not be changed to satisfy it.
 
+The remaining `ZicntrU` failure is in ACT4's expected instruction count.
+At WFI, the self-checking ELF tries M-mode invisible emulation before
+forwarding the trap to S-mode. The signature ELF goes directly to S-mode.
+The self-checking ELF returns `0x108` on both BOOM and Sail; its signature
+expects `0x9f`. The extra 105 M-mode handler instructions explain the
+whole difference. Sections 3.1.8 and 3.1.10 require counting these retired
+handler instructions. This is a framework defect, category (d).
+
 ---
 
 ## 19. Upstream bugs fixed in the port
