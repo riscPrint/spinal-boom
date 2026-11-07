@@ -12,7 +12,8 @@ import org.scalatest.funsuite.AnyFunSuite
  * BENCH_DIR (default gem5/bench/build/bare) holds the `*.riscv` ELFs; BENCH_FILTER
  * is a regex on the name; BENCH_CONFIG picks the preset (default large);
  * BENCH_MAX_CYCLES, BENCH_SEED (default 1), BENCH_MEM_LATENCY (fixed memory latency
- * in cycles, default 20). Results go to gem5/results/rtl-<config>.csv.
+ * in cycles, default 20; use random for randomized timing).
+ * Results go to gem5/results/rtl-<config>.csv.
  */
 class BenchmarksSpec extends AnyFunSuite with BeforeAndAfterAll {
   val benchDir = new java.io.File(sys.env.getOrElse("BENCH_DIR", "gem5/bench/build/bare"))
@@ -22,8 +23,11 @@ class BenchmarksSpec extends AnyFunSuite with BeforeAndAfterAll {
   lazy val compiled = BoomSim.compile(tileConfig, configName, wave = sys.env.contains("BENCH_WAVE"))
   val maxCycles = sys.env.get("BENCH_MAX_CYCLES").map(_.toLong).getOrElse(50000000L)
   val seed = sys.env.get("BENCH_SEED").map(_.toInt).getOrElse(1)
-  val memLatency = sys.env.get("BENCH_MEM_LATENCY").map(_.toInt).getOrElse(20)
-  println(s"BENCH config=$configName mem_latency=$memLatency seed=$seed")
+  val memLatency = sys.env.getOrElse("BENCH_MEM_LATENCY", "20") match {
+    case "random" => None
+    case n => Some(n.toInt)
+  }
+  println(s"BENCH config=$configName mem_latency=${memLatency.fold("random")(_.toString)} seed=$seed")
 
   val benches = Option(benchDir.listFiles()).toSeq.flatten
     .filter(f => f.isFile && f.getName.endsWith(".riscv"))
@@ -48,7 +52,7 @@ class BenchmarksSpec extends AnyFunSuite with BeforeAndAfterAll {
       }
     }
     val r = BoomSim.run(compiled, path, maxCycles = maxCycles, verbose = sys.env.contains("BENCH_VERBOSE"),
-      seed = seed, onStore = onStore, memLatency = Some(memLatency))
+      seed = seed, onStore = onStore, memLatency = memLatency)
     assert(r == BoomSim.Pass, s"(seed $seed)")
     assert(seen.forall(_ == 0xff), s"bench_stats not fully written (byte masks ${seen.map(m => f"$m%02x").mkString(",")})")
     val Array(cycles, instret) = words
