@@ -44,7 +44,7 @@ tests. The existing three runner exclusions remain.
 | `Zalrsc-sc.{w,d}` | 2 | Existing D$ debug assertion after 100 failed SCs. |
 | `Sm_mcsr_cntr` | 1 | Test requires the emulated `time` read within 100 ticks. The spec gives no such bound. |
 | `Sstvecd` | 1 | Legal WARL `stvec` width differs from Sail. |
-| `ZicntrU` | 1 | The initial trap-retirement defect is fixed. A trace of the remaining failure is queued. |
+| `ZicntrU` | 1 | The initial trap-retirement defect is fixed. The remaining signature omits 105 handler instructions present in the DUT ELF; Sail reproduces the same failure. |
 
 [`docs/ACT4_TRIAGE.md`](../docs/ACT4_TRIAGE.md) records one verdict per
 assigned test, the divergence points, spec sections, and fix commits.

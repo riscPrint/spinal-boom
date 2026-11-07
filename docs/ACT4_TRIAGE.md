@@ -24,8 +24,8 @@ Sail instruction/CSR trace. These are simulation results, not hardware results.
 | `Sm_mcsr_cntr-00` | (d), platform timing assumption in test | The `time` read at `0x80001d68` uses software emulation. The delta after writing mtime is 687 ticks. The test requires less than 100 ticks. | Retain DUT and config. Section 3.2.1 gives no 100-tick emulation bound. |
 | `Sstvecd-00` | (b), legal WARL choice | Read at `0x800007d0` after setting bit 38: DUT gives `0xffffffc000000000`; Sail expects `0x4000000000`. BOOM sign-extends its 39-bit `stvec`. | Retain DUT. Section 4.1.2 permits WARL BASE. Sail exposes no matching width parameter. |
 | `ZicntrSm-00` | (b), upstream bug fixed in port | `minstret` read at `0x80000adc` gives delta 44 after ECALL at `0x80000ad8`; Sail gives 43. Both traces have the same 45 instruction attempts between the two reads, inclusive. | `9233cc7`. ECALL/EBREAK must not count as retired. Section 3.3.1. |
-| `ZicntrS-00` | (b), upstream trap retirement defect | `instret` read at `0x800019d0` gives delta 221; expected 219 in the inaccessible-counter test, which uses ECALL services. | `9233cc7` corrects trap counting. Sections 3.3.1 and 3.1.10. Final result must also check handler and timer differences. |
-| `ZicntrU-00` | (b), upstream trap retirement defect | `instret` read at `0x80000754` gives delta 1161; expected 1155 in the inaccessible-counter test, which uses ECALL services. | `9233cc7` corrects trap counting. Sections 3.3.1 and 3.1.10. The old ELF also fails on Sail later at its WFI delta check. |
+| `ZicntrS-00` | (b), upstream trap retirement defect | `instret` read at `0x800019d0` gives delta 221; expected 219 in the inaccessible-counter test, which uses ECALL services. | `9233cc7` corrects trap counting. Sections 3.3.1 and 3.1.10. PASS in the full rerun. |
+| `ZicntrU-00` | (b) initial bug fixed; (d) remaining framework defect | Initial `instret` read at `0x80000754`: delta 1161 versus 1155 from ECALL counting. After the fix, WFI at `0x800009f4` takes an illegal-instruction trap. The DUT ELF routes through M-mode emulation before S-mode; the signature ELF routes directly to S-mode. | `9233cc7` fixes the initial defect, section 3.3.1. Remaining result is `0x108` on both DUT and Sail, versus signature `0x9f`. The extra 105 retired handler instructions explain the whole difference. Retain core/config. Sections 3.1.8 and 3.1.10. |
 
 No port-only mismatch, category (a), was found in these first failing checks.
 The PMP changes are still required. A change to the advertised PMP grain
@@ -49,6 +49,33 @@ The upstream [PMP fetch issue](https://github.com/riscv-boom/riscv-boom/issues/7
 reports the same mechanism for BOOM v3. The v4 diagnosis above comes from
 local code and traces.
 
+## Remaining ZicntrU failure
+
+The final DUT trace reaches `cp_instret_wfi_taken`. WFI at `0x800009f4`
+raises an illegal-instruction exception. The self-checking ELF first enters
+M-mode at `0x80001200`, tries invisible emulation, and forwards the trap
+to S-mode. Its count at `0x80000a08` is `0x108`. The check at
+`0x80000a10` compares this with the signature value `0x9f` and fails.
+
+Running this same self-checking ELF on Sail 0.15 gives the same `0x108`
+and the same failure. The signature-generation ELF goes directly to
+S-mode after WFI. Its build disables invisible emulation through
+`tests/env/sail_macros.h:28-30`. Comparing the two Sail instruction traces
+from the initial `instret` read through the final subtraction gives 273
+instruction attempts in the DUT ELF and 168 in the signature ELF.
+The 105 extra attempts are all in the M-mode handler and forwarding path.
+They account for `0x108 - 0x9f = 105`.
+
+This is category (d), an ACT4 framework defect. Sections 3.1.8 and 3.1.10
+allow the selected delegation path and require retired handler instructions
+to be counted. The framework must use matching handler paths for the
+expected count or remove the handler contribution. No core or DUT-config
+change is needed for this remaining failure.
+
+Evidence: `target/act4-triage/zicntru-final.log`,
+`target/act4-triage/zicntru-final-sail.log`, and
+`target/act4-triage/final-elfs/boom-rv64gc/build/priv/ZicntrU/ZicntrU-00.sig.trace`.
+
 ## Validation
 
 Completed checks:
@@ -66,8 +93,8 @@ Completed checks:
   `ZicntrSm` passed. The full run completed: **589 PASS, 31 FAIL, 620 total**.
   All 620 tests ran with seed 1. Two failures were the existing SC debug
   assertions. No test was canceled, ignored, or pending.
-- `ZicntrU` still fails after the trap-count fix. A trace of the new
-  failure is queued in `target/act4-triage/zicntru-final.log`.
+- The final `ZicntrU` trace confirms the framework defect described above.
+  The corrected DUT and Sail give the same remaining counter delta.
 - Full small riscv-tests selection with RVFI and seed 1: **321 PASS,
   0 FAIL**, one suite completed. No test was canceled, ignored, or pending.
   The runner retains its existing exclusions: `rv64ui-p-ma_data`,
@@ -97,7 +124,6 @@ instructions across fetch packet boundaries. The current `FetchBundle`
 has one access-fault bit for a whole packet. Reducing only the I-TLB
 request size would leave later instruction bytes unchecked.
 
-After the queued `ZicntrU` trace finishes, inspect its new failure. The
-initial counter verdicts above describe
-the first failure only. `ZicntrS` and `ZicntrSm` now pass. The remaining
-`ZicntrU` failure needs its queued trace before its final cause is known.
+The assigned triage and regression runs are complete. The three PMP fixes
+remain implementation work. `ZicntrS` and `ZicntrSm` pass. The remaining
+`ZicntrU` failure is the framework defect described above.
