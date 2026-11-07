@@ -221,7 +221,7 @@
   },
   "platform": {
     "vendorid": 0,
-    "archid": 0,
+    "archid": 2,
     "impid": 0,
     "hartid": 0,
     "cache_block_size_exp": 6,
