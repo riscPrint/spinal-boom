@@ -43,3 +43,7 @@ upstream non-conformances that remain. With the ACT4 checkout of 2026-10-15
 | `PMPSm_cfg_A_tor_{bot,zero}`, `PMPSm_cfg_tor_check-01` | New in the 2026-10-15 checkout; not triaged. |
 | `ExceptionsSvZalrsc*`, `ExceptionsSvSm_*_mprv_*` | New in that checkout; not triaged (likely the `ExceptionsSv*` cause). |
 | `Sm_F`, `Sm_mcsr_access`, `Sm_mcsr_cntr`, `Sstvecd`, `Zicntr{S,Sm,U}` | New in that checkout; not triaged. |
+
+The 2026-11-07 triage of the 15 previously untriaged failures is in
+[`docs/ACT4_TRIAGE.md`](../docs/ACT4_TRIAGE.md). It records upstream bugs,
+config fixes, retained WARL choices, and reference/test limits.

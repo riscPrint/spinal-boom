@@ -1243,9 +1243,33 @@ first two fixes. The 35 failures:
 | `Sv_sv39_canonical_*` (2) | `jalr` to a non-canonical address: BOOM's 40-bit `xepc` turns it into a different invalid address, which the spec allows; Sail keeps the full address. |
 | `ExceptionsSv_*` (2) | First mismatch on `..._Smode`: store access fault at VA 0x1_4000_0014. BOOM's `mtval` is the VA; Sail's is truncated to 32 physical-address bits. Looks like a Sail quirk; the others were not checked individually. |
 | `Zalrsc-sc.{w,d}` (2) | The test retries a failing SC 100 times; BOOM's `debug_sc_fail_cnt` assertion stops the simulation (§20). |
-| `PMPSm_cfg_A_tor_{bot,zero}`, `PMPSm_cfg_tor_check-01` (3) | New in the 2026-10-15 checkout; not triaged. |
-| `ExceptionsSvZalrsc*`, `ExceptionsSvSm_*_mprv_*` (5) | New in that checkout; not triaged (likely the `ExceptionsSv*` cause). |
-| `Sm_F`, `Sm_mcsr_access`, `Sm_mcsr_cntr`, `Sstvecd`, `Zicntr{S,Sm,U}` (7) | New in that checkout; not triaged. |
+| `PMPSm_cfg_A_tor_{bot,zero}`, `PMPSm_cfg_tor_check-01` (3) | Fetch-block PMP boundary faults. See section 18.6. |
+| `ExceptionsSvZalrsc*`, `ExceptionsSvSm_*_mprv_*` (5) | Sail truncates the faulting virtual address in `mtval`. See section 18.6. |
+| `Sm_F`, `Sm_mcsr_access`, `Sm_mcsr_cntr`, `Sstvecd`, `Zicntr{S,Sm,U}` (7) | FP dirty-state bug, architecture-ID config, timer assumption, WARL choice, and trap retirement bug. See section 18.6. |
+
+
+### 18.6 ACT4 triage on 2026-11-07
+
+The 15 tests that were not triaged in section 18.5 were run with seed 1.
+See `docs/ACT4_TRIAGE.md` for the per-test evidence and regression results.
+The initial run reproduced all 15 failures. Two upstream bugs were found:
+FP loads did not mark FS Dirty, and ECALL/EBREAK incremented `instret`.
+The port fixes both. The ACT4 config also described `marchid` as zero;
+BOOM implements the constant value 2.
+
+The exception tests return the faulting virtual address in `mtval`.
+Sail truncates it to the physical address width for these access faults.
+Privileged ISA 1.12 section 3.1.16 requires the virtual address when paging
+is enabled. The DUT behavior is retained.
+
+`Sstvecd` writes bit 38 of `stvec`. BOOM sign-extends its 39-bit register;
+Sail retains the full value. Section 4.1.2 permits a WARL BASE field.
+This difference is retained. Sail has no config field for this width.
+
+`Sm_mcsr_cntr` requires a read of `time` to complete within 100 timer ticks
+of a write to `mtime`. BOOM emulates `time` in software. The measured gap
+is 687 ticks. Section 3.2.1 gives no such latency bound. The test needs a
+platform-dependent bound; the core must not be changed to satisfy it.
 
 ---
 
