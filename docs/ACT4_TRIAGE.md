@@ -51,6 +51,39 @@ local code and traces.
 
 ## Validation
 
-Pending. Logs and private ELF builds are under `target/act4-triage/`.
-The shared ACT4 ELF directory was read only.
-The directed `fs_dirty` and `instret_trap` tests pass on Sail.
+Completed checks:
+
+- `nice -n 10 sbt -J-XX:ActiveProcessorCount=2 compile Test/compile`: PASS.
+- Sail 0.15: `fs_dirty` and `instret_trap` both PASS.
+- Private ACT4 build: PASS, 620 self-checking ELFs. UDB validation passed.
+- `Sm_mcsr_access` with the corrected config: PASS on Sail.
+- `ZicntrU` with the corrected config: FAIL on Sail as well as on the
+  original DUT run. Its reference/test issue needs separate repair.
+- `git diff --check`: PASS.
+
+Pending DUT checks are queued through `with-lock.sh boom`:
+
+| Check | Log |
+|---|---|
+| ACT4 `Sm_F` and all three directed VM tests | `target/act4-triage/fp-fix.log` |
+| Full ACT4 suite with the 620 private ELFs, seed 1 | `target/act4-triage/regressions.log` |
+| Full small riscv-tests selection with RVFI, seed 1 | `target/act4-triage/riscv-tests.log` |
+
+No final ACT4 pass count or DUT regression result is available yet.
+The initial filtered DUT run remains 36 pass, 15 fail out of 51 tests.
+Do not treat the compile, ELF build, or Sail results as DUT results.
+The shared ACT4 ELF directory was read only. The final ELF hashes are in
+`target/act4-triage/final-elf-manifest.json`.
+
+## Open work
+
+The three PMP defects are not fixed. A safe fetch-path change needs
+per-instruction access-fault state and fault state for saved half
+instructions across fetch packet boundaries. The current `FetchBundle`
+has one access-fault bit for a whole packet. Reducing only the I-TLB
+request size would leave later instruction bytes unchecked.
+
+After the queued runs finish, inspect every failing test and update this
+report with the final counts. The S/U counter verdicts above describe
+the first failure only. Further timer or handler differences can remain
+after ECALL counting is corrected.
