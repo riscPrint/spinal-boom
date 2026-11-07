@@ -643,6 +643,8 @@ enables every queue. Simulation config names accept `small-matrix-full`,
 `medium-matrix-partial`, and equivalent names for the other presets.
 Use `RISCV_TESTS_CONFIG`, `VM_TESTS_CONFIG`, or `BENCH_CONFIG` to select one.
 Use `-collapsing-full` or `-collapsing-partial` for comparisons.
+See [matrix verification](MATRIX_VERIFICATION.md) for the ISA, VM, unit,
+elaboration, and IPC results.
 
 ### 9.2 Stores and AMOs: AGEN and DGEN in one slot
 
