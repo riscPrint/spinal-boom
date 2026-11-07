@@ -610,8 +610,7 @@ immediate has exactly one reader. This keeps the issue-queue entries narrow.
 `FpPipeline`. The default is `IssueUnitCollapsing`: an age-ordered queue that
 shifts entries towards slot 0 as older ones issue, so slot order is age order
 and selection is a priority encoder from slot 0. Slots can be "slow" (shift one
-per cycle) or "fast" (shift up to `dispatchWidth`). The age-matrix issue unit
-(`useMatrixIssue`) has not been ported and throws if selected.
+per cycle) or "fast" (shift up to `dispatchWidth`).
 `IssueUnitBanked` is the column-issue variant for wide configs.
 
 Each `IssueSlot` holds one uop and watches the wakeup ports. A slot requests
@@ -625,6 +624,25 @@ The issue unit grants up to `issueWidth` requests per cycle, matching each
 uop's `fu_code` against what each execution unit can accept this cycle
 (`fu_types`, from the units' `io_ready_fu_types`; the iterative divider, for
 example, is not ready while busy).
+
+### 9.1.1 Age-matrix issue unit
+
+`issue-unit-matrix.scala` keeps each uop in a fixed slot. Each matrix row
+marks the older entries. Dispatch selects empty slots in index order.
+New entries record surviving entries and earlier dispatch lanes as older.
+Deallocation clears the corresponding matrix row and column.
+
+`useFullIssueSel=true` selects the oldest ready entry for each issue port.
+Each port removes its selection from the later ports. The partial selector
+uses `ParallelFindOne` trees with alternating index preference. Both modes
+match functional unit types and use the same wakeup and store handling.
+`IssueUnitBanked` can use a matrix unit in each bank.
+
+The default remains `useMatrixIssue=false`. `BoomConfigs.withMatrixIssue`
+enables every queue. Simulation config names accept `small-matrix-full`,
+`medium-matrix-partial`, and equivalent names for the other presets.
+Use `RISCV_TESTS_CONFIG`, `VM_TESTS_CONFIG`, or `BENCH_CONFIG` to select one.
+Use `-collapsing-full` or `-collapsing-partial` for comparisons.
 
 ### 9.2 Stores and AMOs: AGEN and DGEN in one slot
 
@@ -1380,7 +1398,7 @@ with it (`VmTestsSpec`; build with `tests/vm/build.sh`).
 
 - No clock gating; no ECC on caches or TLBs (`tagECC`/`dataECC` must be
   `None`); no TileLink atomics or hints; random D$ replacement only.
-- Not ported: RoCC, the age-matrix issue unit, the software/DPI branch
+- Not ported: RoCC, the software/DPI branch
   predictor, the trace encoder and trace-core ingress, TraceGen, printf
   tracing, `PlusArg` (the hang detector uses its default, bit 13).
 - Synchronous-read memories are modelled as a registered address plus an

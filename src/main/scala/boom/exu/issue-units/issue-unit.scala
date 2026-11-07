@@ -25,7 +25,6 @@ case class IssueParams(
   numEntries: Int = 8,
   useFullIssueSel: Boolean = true,
   numSlowEntries: Int = 0,
-  // useMatrixIssue: Boolean = true,
   useMatrixIssue: Boolean = false,
   iqType: Int
 )
@@ -81,7 +80,7 @@ object IssueUnit
       new IssueUnitBanked(params, numWakeupPorts, useSingleWideDispatch)
     else
       if (params.useMatrixIssue) {
-        throw new IllegalArgumentException("The age-matrix issue unit (IssueUnitAgeMatrix) has not been ported yet")
+        new IssueUnitAgeMatrix(params, numWakeupPorts)
       } else {
         new IssueUnitCollapsing(params, numWakeupPorts)
       }

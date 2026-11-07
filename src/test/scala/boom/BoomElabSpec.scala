@@ -25,6 +25,13 @@ class BoomElabSpec extends AnyFunSuite {
       SpinalBoomConfig("generated/test").generateVerilog(gen(p))
     }
 
+  test("default small and medium tiles elaborate") {
+    for (tile <- Seq(BoomConfigs.small(), BoomConfigs.medium())) {
+      implicit val p: Parameters = BoomTestParams(tile)
+      SpinalBoomConfig("generated/test").generateVerilog(new BoomTile)
+    }
+  }
+
   elab("BoomFrontend") { implicit p => new BoomFrontend(p.tile.icache.get, 0) }
   elab("DecodeUnit") { implicit p => new DecodeUnit }
   elab("BranchMaskGenerationLogic") { implicit p => new BranchMaskGenerationLogic(1) }

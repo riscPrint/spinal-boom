@@ -18,13 +18,7 @@ class BenchmarksSpec extends AnyFunSuite with BeforeAndAfterAll {
   val benchDir = new java.io.File(sys.env.getOrElse("BENCH_DIR", "gem5/bench/build/bare"))
   val filter = sys.env.get("BENCH_FILTER").map(_.r)
   val configName = sys.env.getOrElse("BENCH_CONFIG", "large")
-  val tileConfig = configName match {
-    case "small" => boom.common.BoomConfigs.small()
-    case "medium" => boom.common.BoomConfigs.medium()
-    case "large" => boom.common.BoomConfigs.large()
-    case "mega" => boom.common.BoomConfigs.mega()
-    case "giga" => boom.common.BoomConfigs.giga()
-  }
+  val tileConfig = boom.common.BoomConfigs.named(configName)
   lazy val compiled = BoomSim.compile(tileConfig, configName, wave = sys.env.contains("BENCH_WAVE"))
   val maxCycles = sys.env.get("BENCH_MAX_CYCLES").map(_.toLong).getOrElse(50000000L)
   val seed = sys.env.get("BENCH_SEED").map(_.toInt).getOrElse(1)

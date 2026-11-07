@@ -86,12 +86,16 @@ master, for the pieces BOOM depends on) and `../ref/rocket-chip/dependencies/har
   This is equivalent to rocket-chip with no manager advertising atomics: AMOs to uncached
   regions raise access faults (cacheable AMOs execute in the D$ as usual).
 * Not ported: RoCC (`require(!usingRoCC)`), the software/DPI branch predictor, the TraceGen tile,
-  the trace encoder / trace-core ingress, the age-matrix issue unit (`useMatrixIssue` throws until
-  it is ported), the cycle-by-cycle printfs, and rocket's `PlusArg` (the hang detector uses its
+  the trace encoder / trace-core ingress, the cycle-by-cycle printfs, and rocket's `PlusArg` (the hang detector uses its
   default, bit 13).
 * The tile is a plain component: the I$ (`imem`, TL-UH Get) and D$ (`dmem`, TL-C) masters are
   separate ports, and hart id / reset vector / interrupts are inputs. `boom.system.BoomSimTop`
   merges the two masters with Spinal's `tilelink.Arbiter` for simulation.
+* The age-matrix issue unit uses fixed `IssueSlot` components and UInt age rows.
+  `ParallelFindOne` uses a recursive combinational tree instead of Chisel
+  `Definition`/`Instance`. It keeps the rounded width and index rules.
+  Simulation preset names accept `-matrix` or `-collapsing`, then `-full` or
+  `-partial`. These options apply to all queues and keep the preset banking.
 * Config fragments (`WithNSmallBooms`, `WithTAGELBPD`, ...) are functions in `BoomConfigs`.
 * `enableRVFI` (BoomCoreParams) is a port-only option for the riscv-formal harness.
 

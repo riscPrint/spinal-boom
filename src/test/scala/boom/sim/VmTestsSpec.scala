@@ -9,7 +9,8 @@ import org.scalatest.funsuite.AnyFunSuite
  */
 class VmTestsSpec extends AnyFunSuite {
   val testDir = new java.io.File("tests/vm/build")
-  lazy val compiled = BoomSim.compile(boom.common.BoomConfigs.small(), "small")
+  val configName = sys.env.getOrElse("VM_TESTS_CONFIG", "small")
+  lazy val compiled = BoomSim.compile(boom.common.BoomConfigs.named(configName), configName)
 
   for (t <- Option(testDir.listFiles()).toSeq.flatten.map(_.getName).sorted) test(t) {
     val seed = scala.util.Random.nextInt()

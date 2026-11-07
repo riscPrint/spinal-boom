@@ -23,13 +23,7 @@ class RiscvTestsSpec extends AnyFunSuite {
 
   // RISCV_TESTS_CONFIG selects the BOOM preset (small/medium/large/mega/giga).
   val configName = sys.env.getOrElse("RISCV_TESTS_CONFIG", "small")
-  val tileConfig = configName match {
-    case "small" => boom.common.BoomConfigs.small()
-    case "medium" => boom.common.BoomConfigs.medium()
-    case "large" => boom.common.BoomConfigs.large()
-    case "mega" => boom.common.BoomConfigs.mega()
-    case "giga" => boom.common.BoomConfigs.giga()
-  }
+  val tileConfig = boom.common.BoomConfigs.named(configName)
   // RISCV_TESTS_RVFI enables the RVFI port and checks it with riscv-formal's monitor.
   lazy val compiled = BoomSim.compile(tileConfig, configName, wave = sys.env.contains("RISCV_TESTS_WAVE"),
     rvfi = sys.env.contains("RISCV_TESTS_RVFI"))

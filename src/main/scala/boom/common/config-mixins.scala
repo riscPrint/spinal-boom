@@ -19,6 +19,31 @@ import boom.exu._
  */
 object BoomConfigs {
 
+  /** Select the matrix unit for every queue. Keep the preset's banking. */
+  def withMatrixIssue(tile: BoomTileParams): BoomTileParams =
+    tile.copy(core = tile.core.copy(issueParams = tile.core.issueParams.map(_.copy(useMatrixIssue = true))))
+
+  def withFullIssueSel(tile: BoomTileParams, full: Boolean): BoomTileParams =
+    tile.copy(core = tile.core.copy(issueParams = tile.core.issueParams.map(_.copy(useFullIssueSel = full))))
+
+  /** Simulation names: <preset>[-matrix|-collapsing][-full|-partial]. */
+  def named(name: String): BoomTileParams = {
+    val parts = name.split("-").toSeq
+    require(parts.tail.forall(Set("matrix", "collapsing", "full", "partial")), s"Unknown config: $name")
+    val base = parts.head match {
+      case "small" => small()
+      case "medium" => medium()
+      case "large" => large()
+      case "mega" => mega()
+      case "giga" => giga()
+      case _ => throw new IllegalArgumentException(s"Unknown config: $name")
+    }
+    val unit = if (parts.contains("matrix")) withMatrixIssue(base) else base
+    if (parts.contains("partial")) withFullIssueSel(unit, false)
+    else if (parts.contains("full")) withFullIssueSel(unit, true) else unit
+  }
+
+
   //--------------------------------------------------------------------------
   // Tile presets (WithNSmallBooms, WithNMediumBooms, ...). Each defaults to the
   // TAGE-L branch predictor, as upstream.

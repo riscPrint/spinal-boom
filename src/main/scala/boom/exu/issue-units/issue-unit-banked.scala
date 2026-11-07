@@ -23,8 +23,8 @@ class IssueUnitBanked(
   val innerParams = params.copy(issueWidth = 1, dispatchWidth = if (singleWideDispatch) 1 else params.dispatchWidth)
 
   val issue_units = (0 until params.issueWidth).map { w =>
-    val u = if (innerParams.useMatrixIssue) {
-      throw new IllegalArgumentException("The age-matrix issue unit (IssueUnitAgeMatrix) has not been ported yet")
+    val u: IssueUnit = if (innerParams.useMatrixIssue) {
+      new IssueUnitAgeMatrix(innerParams, numWakeupPorts).setName(s"col_${w}")
     } else {
       new IssueUnitCollapsing(innerParams, numWakeupPorts).setName(s"col_${w}")
     }
