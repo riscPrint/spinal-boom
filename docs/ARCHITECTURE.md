@@ -1231,7 +1231,8 @@ implementation and Sail's reference results.
 - `act4/build.sh` builds the ELFs (with a macOS workaround for udb's bundled
   Linux Z3). `Act4Spec` runs them on `BoomSim`.
 
-Result: with the ACT4 checkout of 2026-10-15 (`56d40ab`, 620 tests), **585
+Historical baseline, before the section 18.6 fixes: with the ACT4 checkout
+of 2026-10-15 (`56d40ab`, 620 tests), **585
 pass** with all fixes in §19, and 583 without §19.4 (the two
 `SvPMP_sv39_pmp_on_pte_*` tests). An earlier checkout gave 494 of 524 with the
 first two fixes. The 35 failures:
@@ -1256,6 +1257,13 @@ The initial run reproduced all 15 failures. Two upstream bugs were found:
 FP loads did not mark FS Dirty, and ECALL/EBREAK incremented `instret`.
 The port fixes both. The ACT4 config also described `marchid` as zero;
 BOOM implements the constant value 2.
+
+The full DUT rerun completed with **589 pass, 31 fail out of 620 tests**,
+all with seed 1. `Sm_F`, `Sm_mcsr_access`, `ZicntrS`, and `ZicntrSm` pass.
+`ZicntrU` still fails after the retirement-count fix. The three assigned
+PMP boundary defects remain unfixed. The 31 failures include the two
+existing SC debug assertions. The small riscv-tests run with RVFI passed
+all 321 selected tests. All three directed VM tests passed.
 
 The exception tests return the faulting virtual address in `mtval`.
 Sail truncates it to the physical address width for these access faults.

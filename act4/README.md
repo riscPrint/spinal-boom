@@ -29,21 +29,24 @@ were triaged.
 
 ## Status
 
-See `../PORTING_NOTES.md` for the upstream BOOM bugs fixed in the port and the
-upstream non-conformances that remain. With the ACT4 checkout of 2026-10-15
-(`56d40ab`, 620 tests) 585 pass; the 35 failures (an earlier checkout gave 494 of 524):
+The 2026-11-07 full DUT run on the small preset completed with **589 pass,
+31 fail out of 620 tests**, all with seed 1. ACT4 checkout: `56d40ab`.
+The 31 failures include two SC debug assertions. The three directed VM
+tests pass. The small riscv-tests run with RVFI passed all 321 selected
+tests. The existing three runner exclusions remain.
 
-| Tests | Cause |
-|-------|-------|
-| `PMP*` (`na4`/`tor` cases, `PMPZca`) | Fetch PMP is checked over the whole 8-byte fetch block (upstream BOOM/rocket); a narrower region around fetched code faults. Traced for `PMPZca_aligned_na4`; the others' first failures are also `jalr` fetches into NA4/TOR regions. |
-| `SvPMP_sv39_pmp_on_pa_*` | Not triaged individually; PMP on fetched pages, likely the same cause. (`SvPMP_sv39_pmp_on_pte_*` failed on the NBDTLB `ae_ptw` bug and pass since that fix.) |
-| `Sv_sv39_canonical_*` | `jalr` to a non-canonical address: BOOM's `xepc` holds 40 bits and converts the invalid address to another invalid one, which the spec allows; Sail stores the full address and has no option for this. |
-| `ExceptionsSv*` | First mismatch (checked for `ExceptionsSv_..._Smode`): store access fault at VA 0x1_4000_0014, BOOM's `mtval` = the VA, Sail's = the VA truncated to `physaddr_bits` (32). Looks like a Sail quirk; the rest of the family not checked individually. |
-| `Zalrsc-sc.{w,d}` | Upstream D$ debug assertion after 100 failed SCs in a row (the test's retry loop is legal). |
-| `PMPSm_cfg_A_tor_{bot,zero}`, `PMPSm_cfg_tor_check-01` | New in the 2026-10-15 checkout; not triaged. |
-| `ExceptionsSvZalrsc*`, `ExceptionsSvSm_*_mprv_*` | New in that checkout; not triaged (likely the `ExceptionsSv*` cause). |
-| `Sm_F`, `Sm_mcsr_access`, `Sm_mcsr_cntr`, `Sstvecd`, `Zicntr{S,Sm,U}` | New in that checkout; not triaged. |
+| Tests | Count | Cause or evidence limit |
+|---|---:|---|
+| PMP NA4/TOR cases and `PMPZca` | 15 | Fetch checks cover the whole eight-byte packet. The three assigned cfg cases were traced individually. They remain unfixed. |
+| `SvPMP_sv39_pmp_on_pa_*` | 2 | Not triaged individually; likely fetch PMP. |
+| `ExceptionsSv*` | 7 | Virtual-address versus physical-width `mtval` values. The five assigned new cases were traced individually. The two older cases retain their prior diagnosis. |
+| `Sv_sv39_canonical_*` | 2 | The 40-bit EPC representation changes an invalid address to another invalid address, which the spec permits. |
+| `Zalrsc-sc.{w,d}` | 2 | Existing D$ debug assertion after 100 failed SCs. |
+| `Sm_mcsr_cntr` | 1 | Test requires the emulated `time` read within 100 ticks. The spec gives no such bound. |
+| `Sstvecd` | 1 | Legal WARL `stvec` width differs from Sail. |
+| `ZicntrU` | 1 | The initial trap-retirement defect is fixed. A trace of the remaining failure is queued. |
 
-The 2026-11-07 triage of the 15 previously untriaged failures is in
-[`docs/ACT4_TRIAGE.md`](../docs/ACT4_TRIAGE.md). It records upstream bugs,
-config fixes, retained WARL choices, and reference/test limits.
+[`docs/ACT4_TRIAGE.md`](../docs/ACT4_TRIAGE.md) records one verdict per
+assigned test, the divergence points, spec sections, and fix commits.
+`Sm_F`, `Sm_mcsr_access`, `ZicntrS`, and `ZicntrSm` now pass.
+See `../PORTING_NOTES.md` for the upstream bugs fixed in the port.

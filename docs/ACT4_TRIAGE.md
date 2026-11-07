@@ -63,20 +63,27 @@ Completed checks:
   with seed 1. VM tests `ae_ptw`, `fs_dirty`, and `instret_trap` passed
   with seeds -1641846888, -946866940, and 1845740517 respectively.
 - In the full ACT4 run, `Sm_F`, `Sm_mcsr_access`, `ZicntrS`, and
-  `ZicntrSm` have passed. The run has not finished.
+  `ZicntrSm` passed. The full run completed: **589 PASS, 31 FAIL, 620 total**.
+  All 620 tests ran with seed 1. Two failures were the existing SC debug
+  assertions. No test was canceled, ignored, or pending.
 - `ZicntrU` still fails after the trap-count fix. A trace of the new
   failure is queued in `target/act4-triage/zicntru-final.log`.
+- Full small riscv-tests selection with RVFI and seed 1: **321 PASS,
+  0 FAIL**, one suite completed. No test was canceled, ignored, or pending.
+  The runner retains its existing exclusions: `rv64ui-p-ma_data`,
+  `rv64ui-v-ma_data`, and `rv64mi-p-instret_overflow`. These are excluded
+  from selection, not reported as skipped tests.
 - `git diff --check`: PASS.
 
-The full ACT4 run is in progress. Other pending DUT checks are queued
-through `with-lock.sh boom`:
+All full DUT regression runs used `with-lock.sh boom`. Run logs:
 
 | Check | Log |
 |---|---|
 | Full ACT4 suite with the 620 private ELFs, seed 1 | `target/act4-triage/regressions.log` |
 | Full small riscv-tests selection with RVFI, seed 1 | `target/act4-triage/riscv-tests.log` |
 
-No final ACT4 pass count or riscv-tests result is available yet.
+The final ACT4 pass count is 589 of 620. Riscv-tests with RVFI passed 321 of
+321 selected tests. All three VM tests passed.
 The initial filtered DUT run remains 36 pass, 15 fail out of 51 tests.
 Do not treat the compile, ELF build, or Sail results as DUT results.
 The shared ACT4 ELF directory was read only. The final ELF hashes are in
@@ -90,7 +97,7 @@ instructions across fetch packet boundaries. The current `FetchBundle`
 has one access-fault bit for a whole packet. Reducing only the I-TLB
 request size would leave later instruction bytes unchecked.
 
-After the queued runs finish, inspect every failing test and update this
-report with the final counts. The initial counter verdicts above describe
+After the queued `ZicntrU` trace finishes, inspect its new failure. The
+initial counter verdicts above describe
 the first failure only. `ZicntrS` and `ZicntrSm` now pass. The remaining
 `ZicntrU` failure needs its queued trace before its final cause is known.
