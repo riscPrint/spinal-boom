@@ -14,6 +14,9 @@ class VmTestsSpec extends AnyFunSuite {
 
   for (t <- Option(testDir.listFiles()).toSeq.flatten.map(_.getName).sorted) test(t) {
     val seed = scala.util.Random.nextInt()
-    assert(BoomSim.run(compiled, s"$testDir/$t", seed = seed, verbose = sys.env.contains("VM_TESTS_VERBOSE")) == BoomSim.Pass, s"(seed $seed)")
+    val elf = new Elf(s"$testDir/$t")
+    val forbidden = elf.symbols.get("forbidden_fetch_start").map(start =>
+      start -> elf.symbols("forbidden_fetch_end"))
+    assert(BoomSim.run(compiled, s"$testDir/$t", seed = seed, verbose = sys.env.contains("VM_TESTS_VERBOSE"), forbiddenFetchRange = forbidden) == BoomSim.Pass, s"(seed $seed)")
   }
 }

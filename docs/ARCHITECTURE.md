@@ -421,11 +421,31 @@ faulting parcel. This also handles a second-parcel fault within one packet.
 The existing packet access-fault bit keeps its PMA and PTW meaning.
 Page-fault state and handling do not change.
 
-PMP faults do not kill an entire I-cache response. The frontend needs its
-instruction bytes to determine instruction length. Younger instructions can
-be fetched, but the normal precise trap flush prevents their retirement.
+If the first required parcel is PMP-denied, F2 kills the I-cache request.
+It sends the fault to F3 without waiting for `icache.io.resp.valid`. The
+first required parcel is at the fetch PC, including the continuation of a
+saved half instruction. A denied saved first half also kills the request.
+F2 substitutes zero bytes before expansion and predecode in this case.
+The saved half and its fault bits still set the instruction PC and `mtval`.
+PMP kill also applies during replay. Translation faults retain their priority;
+a missing translation cannot supply a new physical-address PMP fault.
+
+If the packet starts with allowed parcels, F2 fetches its bytes. A later
+PMP-denied parcel does not kill the packet. This lets earlier legal
+instructions retire before the fault. Such a request can read PMP-denied
+bytes later in the packet and elsewhere in the cache line. The full-line
+refill can store those bytes in the I-cache. Later packet bytes can enter
+expansion and predecode. This is speculative instruction fetch, as with
+rocket's full-line refill after its requested-size PMP check. The per-parcel
+fault bits prevent denied instructions from retiring. Each new fetch checks
+PMP again, even on a cache hit. A fetch whose first required parcel is denied
+cannot issue a TileLink `Get`, even if its cache line is absent.
+
 There is no new pipeline stage or scheduled cycle. This change fixes upstream
 issue #786 in the port. Directed checks are in `tests/vm/fetch_pmp.S`.
+`BoomSim.run` has an optional `forbiddenFetchRange` guard, off by default.
+The VM test enables it from ELF range symbols. It checks valid `Get` requests,
+including requests that wait for A-channel ready.
 
 ### 6.3 Branch predictors
 

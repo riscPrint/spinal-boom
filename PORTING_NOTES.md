@@ -167,6 +167,11 @@ Each fix is a small, commented change and is easy to revert.
   checks PMP for each two-byte parcel at the translated physical address.
   It combines the parcel faults for each instruction and saves the fault
   of a trailing half instruction through packet, bank, and page boundaries.
+  If the first required parcel or a saved first half is denied, F2 kills
+  the I-cache request and sends the fault without cache data. Replay also
+  retains this kill. Packets that start with allowed bytes can still refill
+  denied bytes in the same cache line; per-instruction faults prevent their
+  retirement. See section 6.2.1 for this speculative-fetch boundary.
   The ROB reports the faulting parcel address in `mtval`. Page-fault handling
   and pipeline stage count stay unchanged. Covered by `tests/vm/fetch_pmp.S`
   and ACT4 PMP boundary tests. See architecture section 6.2.1.

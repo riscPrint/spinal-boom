@@ -206,7 +206,10 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   val s2_tlb_resp = f2(TLB_RESP)
   val s2_tlb_miss = f2(TLB_MISS)
   val s2_is_replay = f2(IS_REPLAY) && s2_valid
-  val s2_xcpt = s2_valid && (s2_tlb_resp.ae.inst || s2_tlb_resp.pf.inst) && !s2_is_replay
+  val s2_first_pmp_ae = Bool()
+  val s2_fetch_fault = s2_tlb_resp.ae.inst || s2_tlb_resp.pf.inst || s2_first_pmp_ae
+  val s2_xcpt = s2_valid && (s2_first_pmp_ae ||
+    ((s2_tlb_resp.ae.inst || s2_tlb_resp.pf.inst) && !s2_is_replay))
   val f3_ready = Bool()
 
   icache.io.s2_kill := s2_xcpt
@@ -243,6 +246,12 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   // Tracks if last fetchpacket contained a half-inst
   val f2_prev_is_half = Reg(Bool()) init False
 
+  // No bytes are needed when the first required parcel is denied. A saved
+  // half belongs to the preceding packet; its continuation is at s2_vpc.
+  s2_first_pmp_ae := !s2_tlb_miss && !s2_tlb_resp.pf.inst &&
+    (s2_pmp_ae(s2_vpc(log2Ceil(bankBytes)-1 downto 1)) ||
+      (f2_prev_is_half && f2_prev_pmp_ae))
+
   val f2_fetch_bundle = new FetchBundle
   f2_fetch_bundle.assignDontCare()
   f2_fetch_bundle.pc         := s2_vpc
@@ -266,7 +275,8 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   for (b <- 0 until nBanks) {
     f2_fetch_bundle.bpd_meta(b) := 0
 
-    val bank_data  = icache.io.resp.payload.data((b+1)*bankWidth*16-1 downto b*bankWidth*16)
+    val bank_data = Mux(s2_first_pmp_ae, U(0, bankWidth*16 bits),
+      icache.io.resp.payload.data((b+1)*bankWidth*16-1 downto b*bankWidth*16))
     for (w <- 0 until bankWidth) {
       val i = (b * bankWidth) + w
       val valid = Bool()
@@ -343,7 +353,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
 
   when ((s2_valid && !icache.io.resp.valid) ||
         (s2_valid && icache.io.resp.valid && !f3_ready)) {
-    s0_valid := (!s2_tlb_resp.ae.inst && !s2_tlb_resp.pf.inst) || s2_is_replay || s2_tlb_miss
+    s0_valid := (!s2_fetch_fault) || s2_is_replay || s2_tlb_miss
     s0_vpc   := s2_vpc
     s0_is_replay := s2_valid && icache.io.resp.valid
     s0_ghist := s2_ghist
@@ -360,7 +370,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     when ((s1_valid && (s1_vpc =/= f2_predicted_target || f2_correct_f1_ghist)) || !s1_valid) {
       f1_clear := True
 
-      s0_valid     := !((s2_tlb_resp.ae.inst || s2_tlb_resp.pf.inst) && !s2_is_replay)
+      s0_valid     := !(s2_fetch_fault && !s2_is_replay)
       s0_vpc       := f2_predicted_target
       s0_is_replay := False
       s0_ghist     := f2_predicted_ghist
@@ -387,7 +397,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   val f4_ready = Bool()
   f3_ready := f3.io.enq.ready
   f3.io.enq.valid   := (s2_valid && !f2_clear &&
-    (icache.io.resp.valid || ((s2_tlb_resp.ae.inst || s2_tlb_resp.pf.inst) && !s2_tlb_miss))
+    (icache.io.resp.valid || (s2_fetch_fault && !s2_tlb_miss))
   )
   f3.io.enq.payload    := f2_fetch_bundle
 

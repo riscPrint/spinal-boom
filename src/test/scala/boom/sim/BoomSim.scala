@@ -159,7 +159,8 @@ object BoomSim {
           onFinish: (Long, Long) => Unit = (_, _) => (),
           konata: Option[java.io.File] = None,
           memLatency: Option[Int] = None,
-          cycleTrace: Option[java.io.File] = None): Result = {
+          cycleTrace: Option[java.io.File] = None,
+          forbiddenFetchRange: Option[(Long, Long)] = None): Result = {
     val elf = new Elf(elfPath)
     val tohost = elf.symbols("tohost")
     var result: Result = Timeout
@@ -177,6 +178,16 @@ object BoomSim {
       def readLong(a: Long): Long = (0 until 8).map(i => (mem.read(a + i).toLong & 0xff) << (8 * i)).reduce(_ | _)
       var mtimeValue = 0L
       mem.write(mtime, mtimeValue)
+      // Optional directed-test guard. Check valid, including backpressured A.
+      forbiddenFetchRange.foreach { case (start, end) =>
+        dut.clockDomain.onSamplings {
+          if (dut.io.mem.a.valid.toBoolean && dut.io.mem.a.opcode.toEnum == Opcode.A.GET) {
+            val address = dut.io.mem.a.address.toLong
+            assert(address < start || address >= end,
+              f"forbidden fetch Get at 0x$address%x")
+          }
+        }
+      }
       if (verbose) agent.monitor.add(new spinal.lib.bus.tilelink.sim.MonitorSubscriber {
         import spinal.lib.bus.tilelink.sim._
         def log(ch: String, t: Any): Unit = println(s"[${simTime()}] TL $ch ${t.toString.replace('\n', ' ').take(160)}")

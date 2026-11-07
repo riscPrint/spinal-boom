@@ -133,8 +133,9 @@ below fixes the PMP cases. `ZicntrS` and `ZicntrSm` pass. The remaining
 The `fetch-pmp` branch starts at `3c0c707`. It checks PMP for each two-byte
 parcel. It carries per-instruction access faults and saved-half fault state.
 Architecture section 6.2.1 describes the design. Page-fault handling and
-pipeline stage count stay unchanged. A PMP fault now waits for instruction
-bytes from the I-cache, so its trap latency can differ on a cache miss.
+pipeline stage count stay unchanged. This first version waited for I-cache
+bytes on PMP faults. The blocking-review correction below removes that wait
+when the first required parcel is denied.
 
 The first targeted run passed 23 of 27 variants. The two misaligned
 `PMPZca` failures required the address of the second parcel in `mtval`.
@@ -230,3 +231,26 @@ Raw result files are `bench-fixed.csv` and `bench-master.csv` in that directory.
 The complete sequential runner is `target/fetch-pmp/regress.sh`.
 `git diff --check` passed. The restored implementation sources match the
 implementation commit `8674c5b`.
+
+
+### Blocking-review correction
+
+The first required parcel now controls the F2 PMP kill. A denied parcel at
+the fetch PC, or a denied saved first half, kills the I-cache request. F3
+accepts the fault without cache bytes. A later denied parcel keeps its
+per-instruction fault and does not suppress earlier legal instructions.
+Section 6.2.1 states which speculative reads can still include denied bytes.
+
+The directed ELF now checks 13 cases in bare mode and Sv39, then two
+page-fault priority cases with 4 KiB mappings: **28 trap checks per run**.
+It checks a register write before a later fault in the same packet, a cold
+fully denied region, both denied halves, denied RVC, a redirect past a saved
+half, and NA4, TOR, and NAPOT boundaries. The optional sim guard rejects any
+valid TileLink `Get` in the fully denied 64-byte region, including stalled
+requests. It is off by default for other tests. The priority cases check an
+allowed first parcel followed by an unmapped second parcel, and a denied
+first parcel before that unmapped second parcel. U-mode remains covered by
+the ACT4 PMP variants; this directed ELF enters S-mode.
+
+The directed test passes on small and medium. Logs are
+`target/fetch-pmp-review/directed-small.log` and `directed-medium.log`.
