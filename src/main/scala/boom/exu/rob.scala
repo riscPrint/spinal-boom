@@ -652,6 +652,14 @@ class Rob(
       r_xcpt_val      := True
       next_xcpt_uop   := io.enq_uops.at(idx)
       r_xcpt_badvaddr := (AlignPCToBoundary(io.xcpt_fetch_pc, icBlockBytes) | io.enq_uops.at(idx).pc_lob.resized).resized
+      // PMP identifies the faulting parcel. pc_lob points to the second
+      // parcel for an edge instruction; page-fault handling stays unchanged.
+      val fault_uop = io.enq_uops.at(idx)
+      when(fault_uop.fetch_pmp_ae && fault_uop.exc_cause === rocketchip.rocket.Causes.fetch_access) {
+        r_xcpt_badvaddr := ((AlignPCToBoundary(io.xcpt_fetch_pc, icBlockBytes) |
+          fault_uop.pc_lob.resized) - Mux(fault_uop.edge_inst, U(2), U(0)) +
+          Mux(fault_uop.fetch_pmp_ae_second, U(2), U(0))).resized
+      }
     }
   }
 

@@ -304,7 +304,7 @@ object TLBPageLookup {
 }
 
 /** rocket-chip TLB; BOOM uses it as its ITLB. */
-class TLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit p: Parameters) extends CoreModule()(p) {
+class TLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig, checkInstructionPMP: Boolean = true)(implicit p: Parameters) extends CoreModule()(p) {
   setDefinitionName(if (instruction) "ITLB" else "DTLB")
   val io = new Bundle {
     /** request from Core */
@@ -403,7 +403,8 @@ class TLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit p: Para
   val prot_pp = pma.io.resp.pp
   val prot_al = pma.io.resp.al
   val prot_aa = pma.io.resp.aa
-  val prot_x = pma.io.resp.x && !deny_access_to_debug && pmp.io.x
+  // The BOOM frontend checks instruction PMP per parcel after translation.
+  val prot_x = pma.io.resp.x && !deny_access_to_debug && (if (instruction && !checkInstructionPMP) True else pmp.io.x)
   val prot_eff = pma.io.resp.eff
 
   // hit check

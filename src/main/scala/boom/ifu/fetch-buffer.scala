@@ -113,7 +113,9 @@ class FetchBuffer(implicit p: Parameters) extends BoomModule
       in_uops(i).taken          := io.enq.payload.cfi_idx.payload === i && io.enq.payload.cfi_idx.valid
 
       in_uops(i).xcpt_pf_if     := io.enq.payload.xcpt_pf_if
-      in_uops(i).xcpt_ae_if     := io.enq.payload.xcpt_ae_if
+      in_uops(i).fetch_pmp_ae := io.enq.payload.pmp_ae_if(i) && !io.enq.payload.xcpt_ae_if
+      in_uops(i).fetch_pmp_ae_second := !io.enq.payload.pmp_ae_first(i)
+      in_uops(i).xcpt_ae_if     := io.enq.payload.xcpt_ae_if || io.enq.payload.pmp_ae_if(i)
       in_uops(i).bp_debug_if    := io.enq.payload.bp_debug_if_oh(i)
       in_uops(i).bp_xcpt_if     := io.enq.payload.bp_xcpt_if_oh(i)
 

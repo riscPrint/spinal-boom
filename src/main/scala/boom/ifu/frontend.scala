@@ -50,7 +50,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   val icache = new ICache(icParams, staticIdForMetadataUseOnly)
   io.mem << icache.io.mem
   icache.io.invalidate := io.cpu.flush_icache
-  val tlb = new TLB(true, log2Ceil(fetchBytes), TLBConfig(nTLBSets, nTLBWays))
+  val tlb = new TLB(true, log2Ceil(fetchBytes), TLBConfig(nTLBSets, nTLBWays), checkInstructionPMP = false)
   io.ptw <> tlb.io.ptw
   io.cpu.perf.tlbMiss := io.ptw.req.fire
   io.cpu.perf.acquire := icache.io.perf.acquire
@@ -71,6 +71,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   val s0_is_sfence = CombInit(False)
   val s0_replay_resp = new TLBResp(log2Ceil(fetchBytes))
   val s0_replay_ppc  = UInt(paddrBits bits)
+  val s0_replay_pmp_ae = Bits(fetchWidth bits)
 
   icache.io.req.valid     := s0_valid
   icache.io.req.payload.addr := s0_vpc.resized
@@ -99,6 +100,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   val IS_SFENCE = f0.insert(s0_is_sfence)
   val REPLAY_RESP = f0.insert(s0_replay_resp)
   val REPLAY_PPC = f0.insert(s0_replay_ppc)
+  val REPLAY_PMP_AE = f0.insert(s0_replay_pmp_ae)
   val SFENCE = f0.insert(io.cpu.sfence)
 
   val s1_vpc       = f1(VPC)
@@ -121,6 +123,19 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   val s1_tlb_miss = !s1_is_replay && tlb.io.resp.miss
   val s1_tlb_resp = Mux(s1_is_replay, f1(REPLAY_RESP), tlb.io.resp)
   val s1_ppc  = Mux(s1_is_replay, f1(REPLAY_PPC), tlb.io.resp.paddr)
+
+  // Upstream #786: check each 16-bit parcel, not the whole fetch block.
+  // Retain these bits on I-cache replay with the translation response.
+  val s1_pmp_ae = Bits(fetchWidth bits)
+  for (i <- 0 until fetchWidth) {
+    val check = new PMPChecker(1)
+    check.io.addr := (bankAlign(tlb.io.resp.paddr) + (i * 2)).resized
+    check.io.size := 1
+    check.io.pmp := io.ptw.pmp
+    check.io.prv := Cat(io.ptw.status.debug, io.ptw.status.prv).asUInt.resized
+    s1_pmp_ae(i) := Mux(s1_is_replay, f1(REPLAY_PMP_AE)(i), !check.io.x)
+  }
+
   val s1_bpd_resp = bpd.io.resp.f1
 
   icache.io.s1_paddr := s1_ppc
@@ -167,6 +182,9 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   // **** ICache Response (F2) ****
   // --------------------------------------------------------
 
+  val PMP_AE = f1.insert(s1_pmp_ae)
+  val s2_pmp_ae = f2(PMP_AE)
+  s0_replay_pmp_ae := s2_pmp_ae
   val PPC = f1.insert(s1_ppc)
   val TLB_RESP = f1.insert(s1_tlb_resp)
   val TLB_MISS = f1.insert(s1_tlb_miss)
@@ -221,6 +239,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
 
   // Tracks trailing 16b of previous fetch packet
   val f2_prev_half = Reg(UInt(16 bits))
+  val f2_prev_pmp_ae = Reg(Bool())
   // Tracks if last fetchpacket contained a half-inst
   val f2_prev_is_half = Reg(Bool()) init False
 
@@ -242,6 +261,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   def isRVC(inst: UInt) = (inst(1 downto 0) =/= 3)
   var bank_prev_is_half: Bool = f2_prev_is_half
   var bank_prev_half: UInt    = f2_prev_half
+  var bank_prev_pmp_ae: Bool = f2_prev_pmp_ae
   var last_inst: UInt = U(0, 16 bits)
   for (b <- 0 until nBanks) {
     f2_fetch_bundle.bpd_meta(b) := 0
@@ -250,6 +270,17 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     for (w <- 0 until bankWidth) {
       val i = (b * bankWidth) + w
       val valid = Bool()
+      // A full instruction uses both parcels. An RVC instruction uses one.
+      val next_ae = if (w < bankWidth - 1) s2_pmp_ae(i + 1) else False
+      f2_fetch_bundle.pmp_ae_first(i) := s2_pmp_ae(i)
+      f2_fetch_bundle.pmp_ae_if(i) := s2_pmp_ae(i) ||
+        (!isRVC(f2_fetch_bundle.insts(i)) && next_ae)
+      if (w == 0) {
+        when(bank_prev_is_half) {
+          f2_fetch_bundle.pmp_ae_first(i) := bank_prev_pmp_ae
+          f2_fetch_bundle.pmp_ae_if(i) := bank_prev_pmp_ae || s2_pmp_ae(i)
+        }
+      }
       f2_inst_mask(i) := s2_valid && f2_fetch_mask(i) && valid
       f2_fetch_bundle.pcs(i) := f2_aligned_pc + (i << 1) -
         ((f2_fetch_bundle.edge_inst(b) && Bool(w == 0)).asUInt << 1).resize(vaddrBitsExtended)
@@ -299,10 +330,12 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     bank_prev_is_half = Mux(f2_bank_mask(b),
       (!(f2_inst_mask((b+1)*bankWidth-2) && !isRVC(f2_fetch_bundle.insts((b+1)*bankWidth-2))) && !isRVC(last_inst)),
       bank_prev_is_half)
+    bank_prev_pmp_ae = Mux(f2_bank_mask(b), s2_pmp_ae((b+1)*bankWidth-1), bank_prev_pmp_ae)
     bank_prev_half = Mux(f2_bank_mask(b),
       last_inst(15 downto 0),
       bank_prev_half)
   }
+  f2_fetch_bundle.end_half_pmp_ae := bank_prev_pmp_ae
   f2_fetch_bundle.end_half.valid   := bank_prev_is_half
   f2_fetch_bundle.end_half.payload := bank_prev_half
 
@@ -323,6 +356,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     }
     f2_prev_is_half := bank_prev_is_half && !f2_do_redirect
     f2_prev_half    := bank_prev_half
+    f2_prev_pmp_ae := bank_prev_pmp_ae
     when ((s1_valid && (s1_vpc =/= f2_predicted_target || f2_correct_f1_ghist)) || !s1_valid) {
       f1_clear := True
 
@@ -443,7 +477,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
         (offset_from_aligned_pc <= Mux(f3_is_last_bank_in_block, U(fetchBytes+bankBytes), U(2*fetchBytes)))
       )
       f3_fetch_bundle.sfb_masks(i)       := ~MaskLower(lower_mask) & ~MaskUpper(upper_mask)
-      f3_fetch_bundle.shadowable_mask(i) := (!(f3_fetch_bundle.xcpt_pf_if || f3_fetch_bundle.xcpt_ae_if || bpu.io.debug_if || bpu.io.xcpt_if) &&
+      f3_fetch_bundle.shadowable_mask(i) := (!(f3_fetch_bundle.xcpt_pf_if || f3_fetch_bundle.xcpt_ae_if || f3_fetch_bundle.pmp_ae_if(i) || bpu.io.debug_if || bpu.io.xcpt_if) &&
                                              f3_bank_mask(b) &&
                                              (brsigs.shadowable || !f3_mask(i)))
       f3_fetch_bundle.sfb_dests(i)       := offset_from_aligned_pc.resized
@@ -528,6 +562,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
       f2_clear := True
       f2_prev_is_half := f3_fetch_bundle.end_half.valid && !f3_predicted_do_redirect
       f2_prev_half    := f3_fetch_bundle.end_half.payload
+      f2_prev_pmp_ae := f3_fetch_bundle.end_half_pmp_ae
       f1_clear := True
 
       s0_valid     := !(f3_fetch_bundle.xcpt_pf_if || f3_fetch_bundle.xcpt_ae_if)
@@ -675,6 +710,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
       f2_clear := True
       f2_prev_is_half := f4.io.deq.payload.end_half.valid && !f4.io.deq.payload.cfi_idx.valid
       f2_prev_half    := f4.io.deq.payload.end_half.payload
+      f2_prev_pmp_ae := f4.io.deq.payload.end_half_pmp_ae
       f1_clear := True
 
       s0_valid := !(f4.io.deq.payload.xcpt_pf_if || f4.io.deq.payload.xcpt_ae_if)

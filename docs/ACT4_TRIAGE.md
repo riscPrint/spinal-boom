@@ -11,9 +11,9 @@ Sail instruction/CSR trace. These are simulation results, not hardware results.
 
 | Test | Verdict | First divergence and cause | Fix or disposition |
 |---|---|---|---|
-| `PMPSm_cfg_A_tor_bot-00` | (b), upstream PMP defect | `jalr` at `0x80000400` targets `0x80009000`. Sail executes the four-byte return. BOOM raises fetch access fault because its eight-byte fetch block crosses the TOR lower boundary. | Unfixed. Needs per-instruction fetch protection. Section 3.7.1. |
-| `PMPSm_cfg_A_tor_zero-00` | (b), upstream PMP defect | `jalr` at `0x800003a0` targets `0x80009000`, four bytes below the TOR upper bound. Sail returns; BOOM faults on the eight-byte fetch block. | Unfixed. Same fetch protection defect. Section 3.7.1. |
-| `PMPSm_cfg_tor_check-01-00` | (b), upstream PMP defect | `jalr` at `0x80000240` targets `0x80009000`. Sail returns; BOOM faults where the fetch block spans the next TOR boundary. | Unfixed. Same fetch protection defect. Section 3.7.1. |
+| `PMPSm_cfg_A_tor_bot-00` | (b), upstream PMP defect | `jalr` at `0x80000400` targets `0x80009000`. Sail executes the four-byte return. BOOM raises fetch access fault because its eight-byte fetch block crosses the TOR lower boundary. | Fixed by the parcel PMP checks. See the fetch PMP follow-up below. Section 3.7.1. |
+| `PMPSm_cfg_A_tor_zero-00` | (b), upstream PMP defect | `jalr` at `0x800003a0` targets `0x80009000`, four bytes below the TOR upper bound. Sail returns; BOOM faults on the eight-byte fetch block. | Fixed by the parcel PMP checks. See the follow-up below. Section 3.7.1. |
+| `PMPSm_cfg_tor_check-01-00` | (b), upstream PMP defect | `jalr` at `0x80000240` targets `0x80009000`. Sail returns; BOOM faults where the fetch block spans the next TOR boundary. | Fixed by the parcel PMP checks. See the follow-up below. Section 3.7.1. |
 | `ExceptionsSvZalrsc_sv39_exceptions_Zalrsc_Smode-00` | (b), conforming upstream value; reference defect | `lr.w` at `0x8000050c` faults at VA `0x140000000`. DUT `mtval=0x140000000`; Sail `mtval=0x40000000`. | Retain DUT. Section 3.1.16 requires the virtual address under paging. |
 | `ExceptionsSvZalrsc_sv39_exceptions_Zalrsc_Umode-00` | (b), conforming upstream value; reference defect | `lr.w` at `0x180000514` has the same `mtval` difference. | Retain DUT. Section 3.1.16. |
 | `ExceptionsSvZalrscSm_sv39_exceptions_Zalrsc_mprv_S_Mmode-00` | (b), conforming upstream value; reference defect | `lr.w` at `0x800005d4` has the same `mtval` difference with MPRV set. | Retain DUT. Sections 3.1.6.3 and 3.1.16. |
@@ -28,7 +28,7 @@ Sail instruction/CSR trace. These are simulation results, not hardware results.
 | `ZicntrU-00` | (b) initial bug fixed; (d) remaining framework defect | Initial `instret` read at `0x80000754`: delta 1161 versus 1155 from ECALL counting. After the fix, WFI at `0x800009f4` takes an illegal-instruction trap. The DUT ELF routes through M-mode emulation before S-mode; the signature ELF routes directly to S-mode. | `9233cc7` fixes the initial defect, section 3.3.1. Remaining result is `0x108` on both DUT and Sail, versus signature `0x9f`. The extra 105 retired handler instructions explain the whole difference. Retain core/config. Sections 3.1.8 and 3.1.10. |
 
 No port-only mismatch, category (a), was found in these first failing checks.
-The PMP changes are still required. A change to the advertised PMP grain
+At the time of the initial triage, the PMP changes were still required. A change to the advertised PMP grain
 would hide the defect and would not describe the hardware correctly.
 
 ## Source evidence
@@ -118,12 +118,50 @@ The shared ACT4 ELF directory was read only. The final ELF hashes are in
 
 ## Open work
 
-The three PMP defects are not fixed. A safe fetch-path change needs
+The original follow-up identified the need for a fetch-path change with
 per-instruction access-fault state and fault state for saved half
-instructions across fetch packet boundaries. The current `FetchBundle`
-has one access-fault bit for a whole packet. Reducing only the I-TLB
+instructions across fetch packet boundaries. The original `FetchBundle`
+had one access-fault bit for a whole packet. Reducing only the I-TLB
 request size would leave later instruction bytes unchecked.
 
-The assigned triage and regression runs are complete. The three PMP fixes
-remain implementation work. `ZicntrS` and `ZicntrSm` pass. The remaining
+The assigned triage and regression runs are complete. The fetch PMP follow-up
+below fixes the PMP cases. `ZicntrS` and `ZicntrSm` pass. The remaining
 `ZicntrU` failure is the framework defect described above.
+
+## Fetch PMP follow-up, 2026-11-07
+
+The `fetch-pmp` branch starts at `3c0c707`. It checks PMP for each two-byte
+parcel. It carries per-instruction access faults and saved-half fault state.
+Architecture section 6.2.1 describes the design. Page-fault handling and
+pipeline stage count stay unchanged. A PMP fault now waits for instruction
+bytes from the I-cache, so its trap latency can differ on a cache miss.
+
+The first targeted run passed 23 of 27 variants. The two misaligned
+`PMPZca` failures required the address of the second parcel in `mtval`.
+After that correction, the targeted run passed **25 of 27** with seed 1.
+Tests ran in sequence, with no parallel test execution. The selection includes
+10 variants beyond the 17 failing cases in the task.
+
+The 15 repaired cases are the three `PMPSm_cfg` boundary cases, the six
+`PMP{S,Sm,U}_{na4,tor}_legal_lxwr` boundary cases, and six `PMPZca` cases.
+All 13 selected `PMPZca` variants pass, including the misaligned NA4 and TOR
+cases. All selected NA4 and TOR legal-execute variants pass.
+
+Both `SvPMP_sv39_pmp_on_pa_{S,U}mode` tests still fail. Their first failure
+is a store access fault before the execute test. In the S-mode test at
+PC `0x180000398`, the DUT reports `mtval=0x140009014`. Sail's signature trace
+expects `0x40009014`. The DUT preserves the faulting virtual address.
+This is the reference address-truncation issue, not a remaining fetch PMP
+failure. The shared ACT4 inputs were read only.
+
+`tests/vm/fetch_pmp.S` checks NA4 boundaries within a fetch packet, RVC at
+the end of a region, and both halves of 32-bit instructions at packet and
+page boundaries. It repeats eight checks in bare mode and Sv39. It checks
+trap cause, `mepc`, and the faulting parcel address in `mtval`. Sail passes.
+The final directed DUT test passes on small and medium, one ELF and 16
+trap checks on each preset. Logs are `vm-directed-final.log` and
+`vm-directed-medium.log`. The full locked regressions are pending.
+
+Logs are in `target/fetch-pmp/`. `targeted-final.log` records the targeted
+ACT4 result. `fail-trace.log` records the first failing SvPMP check.
+`directed-sail.log` records the directed reference-model result.

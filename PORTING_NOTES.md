@@ -162,11 +162,17 @@ Each fix is a small, commented change and is easy to revert.
   for the same memory mode; its default remains fixed latency 20.
   Spec: https://docs.riscv.org/reference/isa/unpriv/mm-eplan.html
 
+* **Fetch PMP granularity** (`frontend.scala`, upstream issue #786). Upstream
+  checks the whole fetch packet and gives it one access-fault bit. The port
+  checks PMP for each two-byte parcel at the translated physical address.
+  It combines the parcel faults for each instruction and saves the fault
+  of a trailing half instruction through packet, bank, and page boundaries.
+  The ROB reports the faulting parcel address in `mtval`. Page-fault handling
+  and pipeline stage count stay unchanged. Covered by `tests/vm/fetch_pmp.S`
+  and ACT4 PMP boundary tests. See architecture section 6.2.1.
+
 ## Known non-conformances kept from upstream
 
-* **Fetch PMP granularity.** The I-TLB checks PMP over the whole fetch block
-  (`coreInstBytes * fetchWidth`, 8 bytes on the small config), so a PMP region narrower than
-  that (e.g. NA4) around fetched code faults even when the instruction itself is inside it.
 * **`debug_sc_fail_cnt`**: the D$ asserts after 100 failed SCs in a row to one address. That is
   legal software behaviour (ACT's `Zalrsc-sc.{w,d}` deliberately retry an SC outside the
   reservation set 100 times), but the assertion stops the simulation.

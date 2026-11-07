@@ -209,6 +209,9 @@ class FetchBundle(implicit p: Parameters) extends BoomBundle
   val lhist         = Vec.fill(nBanks)(UInt(localHistoryLength bits))
 
   val xcpt_pf_if    = Bool() // I-TLB miss (instruction fetch fault).
+  val pmp_ae_first  = Bits(fetchWidth bits)
+  val pmp_ae_if     = Bits(fetchWidth bits)
+  val end_half_pmp_ae = Bool()
   val xcpt_ae_if    = Bool() // Access exception.
 
   val bp_debug_if_oh= Vec.fill(fetchWidth)(Bool())

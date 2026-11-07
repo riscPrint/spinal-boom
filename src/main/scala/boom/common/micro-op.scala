@@ -140,6 +140,8 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
 
   // frontend exception information
   val xcpt_pf_if       = Bool()             // I-TLB page fault.
+  val fetch_pmp_ae = Bool()
+  val fetch_pmp_ae_second = Bool()
   val xcpt_ae_if       = Bool()             // I$ access exception.
   val xcpt_ma_if       = Bool()             // Misaligned fetch (jal/brjumping to misaligned addr).
   val bp_debug_if      = Bool()             // Breakpoint

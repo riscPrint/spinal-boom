@@ -394,9 +394,38 @@ keeps predictor indices consistent (`enableGHistStallRepair`).
 (`s2_miss`) sends a TileLink `Get` for the whole 64-byte line; refill beats
 are written as they arrive and the valid bit is set when the last one lands.
 `fence.i` invalidates every line (`io.invalidate`). Instruction access faults
-come from the I-TLB's PMA and PMP checks (`s2_tlb_resp.ae.inst`), not from the
+come from the I-TLB's PMA checks and the frontend's parcel PMP checks, not from the
 cache: `resp.ae` is left don't-care (zero), as upstream, so a TileLink error on
 a refill is not reported.
+
+### 6.2.1 Instruction PMP checks
+
+The frontend checks PMP for each two-byte parcel in F1, using the I-TLB's
+physical address and the current privilege and PMP registers. It aligns the
+address to the first fetch bank. Each parcel has a `PMPChecker(1)`.
+The I-TLB uses `checkInstructionPMP = false` for this frontend only.
+It still checks PMA, debug-region access, PTE permissions, and PTW faults.
+Data TLB behavior and the default rocket TLB PMP checks stay unchanged.
+
+F2 receives the registered parcel faults with the translation. Replay saves
+these bits with the translation response. An RVC instruction uses one parcel
+fault. A 32-bit instruction uses the OR of its two parcel faults. The saved
+half instruction carries its first parcel fault through F2, F3, and F4 repair
+paths. The next bank or packet supplies the second parcel fault. Across a page
+boundary, each parcel uses its own page translation.
+
+`FetchBundle.pmp_ae_if` holds one fault bit per instruction slot.
+`pmp_ae_first` records whether the first parcel failed. The fetch buffer copies
+this state into each micro-op. The ROB uses it to set `mtval` to the first
+faulting parcel. This also handles a second-parcel fault within one packet.
+The existing packet access-fault bit keeps its PMA and PTW meaning.
+Page-fault state and handling do not change.
+
+PMP faults do not kill an entire I-cache response. The frontend needs its
+instruction bytes to determine instruction length. Younger instructions can
+be fetched, but the normal precise trap flush prevents their retirement.
+There is no new pipeline stage or scheduled cycle. This change fixes upstream
+issue #786 in the port. Directed checks are in `tests/vm/fetch_pmp.S`.
 
 ### 6.3 Branch predictors
 
@@ -974,7 +1003,7 @@ lane. Each entry stores the PPN, the PTE permission bits (`sr`, `sw`, `sx`,
 19.2 adds `pf`.
 
 The **I-TLB** is rocket's `TLB` (`rocket/TLB.scala`), instantiated by the
-frontend. It checks PMP over the whole fetch request size (§20).
+frontend. The frontend checks instruction PMP per parcel (section 6.2.1).
 
 The **PTW** (`rocket/PTW.scala`) serves both TLBs (and a third, unused port)
 through an arbiter: it walks the Sv39 page table through the D$, caching leaf
@@ -1265,7 +1294,9 @@ BOOM implements the constant value 2.
 The full DUT rerun completed with **589 pass, 31 fail out of 620 tests**,
 all with seed 1. `Sm_F`, `Sm_mcsr_access`, `ZicntrS`, and `ZicntrSm` pass.
 `ZicntrU` still fails after the retirement-count fix. The three assigned
-PMP boundary defects remain unfixed. The 31 failures include the two
+PMP boundary defects remained unfixed in that baseline. Section 6.2.1 and
+the fetch PMP follow-up in `ACT4_TRIAGE.md` record the later fix.
+The 31 baseline failures include the two
 existing SC debug assertions. The small riscv-tests run with RVFI passed
 all 321 selected tests. All three directed VM tests passed.
 
@@ -1429,9 +1460,6 @@ with it (`VmTestsSpec`; build with `tests/vm/build.sh`).
 
 **Kept from upstream (non-conformances):**
 
-- **Fetch PMP granularity.** The I-TLB checks PMP over `coreInstBytes *
-  fetchWidth` (8 bytes). A PMP region narrower than the fetch block around
-  executing code faults even when the instruction is inside it.
 - **`debug_sc_fail_cnt`.** The D$ asserts after 100 consecutive failed SCs to
   one address. That is legal software behaviour, but the assertion stops
   simulation.
