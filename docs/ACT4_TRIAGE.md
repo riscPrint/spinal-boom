@@ -59,17 +59,24 @@ Completed checks:
 - `Sm_mcsr_access` with the corrected config: PASS on Sail.
 - `ZicntrU` with the corrected config: FAIL on Sail as well as on the
   original DUT run. Its reference/test issue needs separate repair.
+- Targeted DUT run: 4 PASS, 0 FAIL across two suites. ACT4 `Sm_F` passed
+  with seed 1. VM tests `ae_ptw`, `fs_dirty`, and `instret_trap` passed
+  with seeds -1641846888, -946866940, and 1845740517 respectively.
+- In the full ACT4 run, `Sm_F`, `Sm_mcsr_access`, `ZicntrS`, and
+  `ZicntrSm` have passed. The run has not finished.
+- `ZicntrU` still fails after the trap-count fix. A trace of the new
+  failure is queued in `target/act4-triage/zicntru-final.log`.
 - `git diff --check`: PASS.
 
-Pending DUT checks are queued through `with-lock.sh boom`:
+The full ACT4 run is in progress. Other pending DUT checks are queued
+through `with-lock.sh boom`:
 
 | Check | Log |
 |---|---|
-| ACT4 `Sm_F` and all three directed VM tests | `target/act4-triage/fp-fix.log` |
 | Full ACT4 suite with the 620 private ELFs, seed 1 | `target/act4-triage/regressions.log` |
 | Full small riscv-tests selection with RVFI, seed 1 | `target/act4-triage/riscv-tests.log` |
 
-No final ACT4 pass count or DUT regression result is available yet.
+No final ACT4 pass count or riscv-tests result is available yet.
 The initial filtered DUT run remains 36 pass, 15 fail out of 51 tests.
 Do not treat the compile, ELF build, or Sail results as DUT results.
 The shared ACT4 ELF directory was read only. The final ELF hashes are in
@@ -84,6 +91,6 @@ has one access-fault bit for a whole packet. Reducing only the I-TLB
 request size would leave later instruction bytes unchecked.
 
 After the queued runs finish, inspect every failing test and update this
-report with the final counts. The S/U counter verdicts above describe
-the first failure only. Further timer or handler differences can remain
-after ECALL counting is corrected.
+report with the final counts. The initial counter verdicts above describe
+the first failure only. `ZicntrS` and `ZicntrSm` now pass. The remaining
+`ZicntrU` failure needs its queued trace before its final cause is known.
