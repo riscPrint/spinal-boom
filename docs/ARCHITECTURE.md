@@ -919,7 +919,11 @@ The same CAM search detects ordering violations:
 - **Load–load.** RVWMO requires same-address loads to appear in order once
   another hart could observe the line. A D$ release marks matching loads
   `observed`; a younger executed load that sees an older one still pending is
-  killed and replayed. The code notes this is stronger than RVWMO requires.
+  killed and replayed. If the older load is nacked and retries after the
+  younger load executed and was observed, the younger load gets `order_fail`.
+  The existing mini-exception path flushes and refetches it. The port restores
+  this replay from BOOM v4's commented code and BOOM v3; v4 asserts instead.
+  These checks are stronger than RVWMO requires.
 
 ### 13.5 Stores and AMOs
 

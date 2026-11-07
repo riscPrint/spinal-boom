@@ -1237,8 +1237,11 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
           when ((l_executed || l_succeeded) &&
                 !s1_executing_loads(i) && // If the load is proceeding in parallel we don't need to kill it
                 l_observed) {        // Its only a ordering failure if the cache line was observed between the younger load and us
-            // this case is no longer possible where an older search gets replayed and found that a younger search has already been released. Note that this is stronger than rvwmo.
-            assert(False)
+            // Upstream v4 asserts here, but an older nacked load can retry after
+            // a probe observed the younger load. Restore v4's commented replay
+            // (also present in v3) to preserve same-address load ordering.
+            ldq_order_fail(i) := True
+            failed_load := True
           }
         } elsewhen (GetRealLSQIdx(lcam_ldq_idx(w)) =/= i) {
           // The load is older, and it wasn't executed

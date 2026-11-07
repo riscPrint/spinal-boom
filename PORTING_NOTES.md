@@ -101,8 +101,8 @@ master, for the pieces BOOM depends on) and `../ref/rocket-chip/dependencies/har
 
 ## Upstream bugs fixed in the port
 
-The first two were found by ACT4, the others in review; each is a small, commented change and
-easy to revert.
+ACT4 found the first two bugs. Review and simulation found the later bugs.
+Each fix is a small, commented change and is easy to revert.
 
 * **LSU, faulting AMO/SC still executes** (`lsu.scala`, STQ `addr.valid`). Upstream holds an STQ
   entry's address invalid only on a store page fault ("Prevent AMOs from executing!"). The
@@ -141,6 +141,26 @@ easy to revert.
   The port excludes `is_sys_pc2epc` from the count sent to CSRFile.
   Privileged ISA 1.12, section 3.3.1 says these instructions do not retire.
   Covered by `tests/vm/instret_trap.S` and ACT4 counter tests.
+* **LSU asserts instead of replaying an observed younger load** (`lsu.scala`).
+  An older load can be nacked after a younger load to the same doubleword has
+  executed. If a cache probe marks the younger load observed before the older
+  load retries, the load CAM detects a possible load-load ordering failure.
+  Upstream v4 (`v4/lsu/lsu.scala:1247-1255`) comments out `ldq_order_fail`
+  and `failed_load` and asserts that this case cannot occur. The port restores
+  those two assignments. BOOM v3 (`v3/lsu/lsu.scala:1125-1130`) also replays
+  this case. The existing LSU exception selector reports the oldest failed
+  load with `MINI_EXCEPTION_MEM_ORDERING`. The ROB flushes and refetches it,
+  without a software trap. The address, byte overlap, age, observed and
+  parallel-execution guards stay as in v4.
+  This is conservative enforcement of RVWMO CoRR: a later load must not read
+  an older write than an earlier load to overlapping bytes, with no intervening
+  store to those bytes. A probe need not change data, so the simulation tests
+  the recovery path, not a two-hart memory-model proof.
+  Regression: `boom.sim.LdLdOrderingSpec` uses large qsort, random memory
+  timing and seed 975830445. Set `BENCH_DIR` to the ROI-instrumented
+  `Arch/bench` ELFs. `BenchmarksSpec` accepts `BENCH_MEM_LATENCY=random`
+  for the same memory mode; its default remains fixed latency 20.
+  Spec: https://docs.riscv.org/reference/isa/unpriv/mm-eplan.html
 
 ## Known non-conformances kept from upstream
 
