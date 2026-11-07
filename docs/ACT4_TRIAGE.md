@@ -241,16 +241,17 @@ accepts the fault without cache bytes. A later denied parcel keeps its
 per-instruction fault and does not suppress earlier legal instructions.
 Section 6.2.1 states which speculative reads can still include denied bytes.
 
-The directed ELF now checks 13 cases in bare mode and Sv39, then two
-page-fault priority cases with 4 KiB mappings: **28 trap checks per run**.
+The directed ELF now checks 13 cases in S-mode with bare mode and Sv39,
+then U-mode with Sv39. Two page-fault priority cases use 4 KiB mappings:
+**41 trap checks per run**.
 It checks a register write before a later fault in the same packet, a cold
 fully denied region, both denied halves, denied RVC, a redirect past a saved
 half, and NA4, TOR, and NAPOT boundaries. The optional sim guard rejects any
 valid TileLink `Get` in the fully denied 64-byte region, including stalled
 requests. It is off by default for other tests. The priority cases check an
 allowed first parcel followed by an unmapped second parcel, and a denied
-first parcel before that unmapped second parcel. U-mode remains covered by
-the ACT4 PMP variants; this directed ELF enters S-mode.
+first parcel before that unmapped second parcel. The U-mode pass uses
+U-accessible leaf mappings and checks the U-mode ECALL cause.
 
 The directed test passes on small and medium. Logs are
 `target/fetch-pmp-review/directed-small.log` and `directed-medium.log`.

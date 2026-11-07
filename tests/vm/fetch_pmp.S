@@ -1,5 +1,6 @@
 # Per-instruction PMP at a four-byte boundary, packet edge, and page edge.
-# Every case enters S-mode directly. The M-mode trap checks cause and mepc.
+# Cases enter S-mode in bare mode and Sv39, then U-mode in Sv39.
+# The M-mode trap checks cause, mepc, mtval, and the earlier register write.
   .section .text.init
   .globl _start
 _start:
@@ -8,7 +9,7 @@ _start:
   la t0, trap
   csrw mtvec, t0
   li s4, 0
-  li s2, 2
+  li s2, 3
 restart:
   la s0, cases
   li s1, 13
@@ -30,7 +31,17 @@ next:
   li t0, 3 << 11
   csrc mstatus, t0
   li t0, 1 << 11
+  # The third table pass uses U-mode and U-accessible leaf mappings.
+  bnez s4, supervisor
+  li t1, 1
+  bne s2, t1, supervisor
+  li t1, 9
+  bne a3, t1, enter
+  li a3, 8
+  j enter
+supervisor:
   csrs mstatus, t0
+enter:
   csrw mepc, a0
   mret
 trap:
@@ -54,6 +65,10 @@ checked:
   # instruction now needs two separate I-TLB page translations.
   la t0, root_pt
   li t1, (0x80000 << 10) | 0xcf
+  li t2, 1
+  bne s2, t2, mapped
+  ori t1, t1, 0x10           # U bit for the third pass
+mapped:
   sd t1, 16(t0)
   srli t0, t0, 12
   li t1, 8 << 60
