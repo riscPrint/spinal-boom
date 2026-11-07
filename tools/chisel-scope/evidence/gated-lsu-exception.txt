@@ -1,0 +1,13 @@
+       0 BoomSimTop.tile.lsu_1.when_ScopedRegNext_l11_10 = 0
+       0 BoomSimTop.tile.lsu_1.mem_xcpt_valids_0 = 0
+       0 BoomSimTop.tile.lsu_1.will_fire_load_agen_exec_0 = 0
+       0 BoomSimTop.tile.lsu_1.will_fire_load_agen_0 = 0
+       0 BoomSimTop.tile.lsu_1.will_fire_store_agen_0 = 0
+       0 BoomSimTop.tile.lsu_1.will_fire_load_retry_0 = 0
+       0 BoomSimTop.tile.lsu_1.will_fire_store_retry_0 = 0
+   10010 BoomSimTop.tile.lsu_1.will_fire_load_agen_exec_0 = 1
+   10020 BoomSimTop.tile.lsu_1.when_ScopedRegNext_l11_10 = 1
+   10020 BoomSimTop.tile.lsu_1.mem_xcpt_valids_0 = 1
+   10020 BoomSimTop.tile.lsu_1.will_fire_load_agen_exec_0 = 0
+   10030 BoomSimTop.tile.lsu_1.when_ScopedRegNext_l11_10 = 0
+   10030 BoomSimTop.tile.lsu_1.mem_xcpt_valids_0 = 0

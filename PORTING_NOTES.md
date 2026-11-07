@@ -185,3 +185,28 @@ Each fix is a small, commented change and is easy to revert.
 * `BoomSim.Platform`: a CLINT (0x0200_0000) and an interrupt generator (0x0C00_0000, words 0/1 =
   meip/seip) are uncached IO regions served from simulation memory; the harness drives the
   interrupt lines from them every cycle and `mtime` counts cycles.
+
+## Conditional register fidelity audit (2026-11-07)
+
+The candidate audit incorrectly added outer-scope enables at 48 upstream
+source sites. Chisel 6.5.0 and firtool 1.62.0 emit free-running registers
+when declaration and connection share a conditional scope. The measured
+forms include `RegNext` in `when`, in an `elsewhen` predicate, in `is`, and
+`ShiftRegister` in `when`. Spinal's original local `RegNext` matches this
+hardware. All 48 candidate gating changes are reverted.
+
+The gated core delayed flush payload capture until the redirect cycle.
+It used stale payload during the redirect and captured the next payload
+afterward. ROB exception-history gating also caused a rollback assertion.
+LSU histories must track the preceding cycle independently of the condition
+on their consumers. No upstream behavior requires a new port deviation.
+
+See `docs/REGNEXT_AUDIT.md` and `tools/chisel-scope/evidence/` for compiled
+Chisel evidence, diagnostic traces, site decisions and final verification.
+
+Completed verification: small riscv-tests with RVFI 321/321, medium 321/321,
+VM 1/1, large benchmarks 9/9, and ACT4 585/620. ACT4's 35 failures match the
+existing documented baseline count in `act4/README.md`; they remain failures.
+All nine large benchmark cycle counts, instruction counts and IPC values
+match `audit-results/baseline-large.csv` exactly. The two Spinal scope tests,
+five parser tests and eight-cycle Chisel/Icarus experiment pass.

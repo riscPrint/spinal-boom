@@ -22,3 +22,6 @@ konata/
 # gem5 output and benchmark ELFs built by gem5/build.sh
 gem5/results/
 gem5/bench/build/
+
+# Conditional register audit logs
+audit-results/
