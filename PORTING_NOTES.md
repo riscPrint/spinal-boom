@@ -131,6 +131,17 @@ easy to revert.
   fails. `IssueMatrixSpec` reproduces this failure with six slots and two ports.
   The port uses `slots_age_matrix(j)`. The full selector already uses that row.
 
+* **FP loads do not mark FS Dirty** (`core.scala`). Upstream drives
+  `set_fs_dirty` only from committed `fflags`. Loads change an FP register but
+  do not produce flags. The port also marks FS Dirty when an FP load commits.
+  Privileged ISA 1.12, section 3.1.6.6 requires this update. Covered by
+  `tests/vm/fs_dirty.S` and ACT4 `Sm_F`.
+* **ECALL/EBREAK increment instret** (`core.scala`). Upstream includes these
+  instructions in the ROB commit count, although CSRFile takes their trap.
+  The port excludes `is_sys_pc2epc` from the count sent to CSRFile.
+  Privileged ISA 1.12, section 3.3.1 says these instructions do not retire.
+  Covered by `tests/vm/instret_trap.S` and ACT4 counter tests.
+
 ## Known non-conformances kept from upstream
 
 * **Fetch PMP granularity.** The I-TLB checks PMP over the whole fetch block

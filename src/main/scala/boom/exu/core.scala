@@ -1108,7 +1108,12 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
 
   // Extra I/O
   // Delay retire/exception 1 cycle
-  csr.io.retire    := RegNext(PopCount(rob.io.commit.arch_valids)).resized
+  // ECALL/EBREAK take their trap in CSRFile after the ROB commits them.
+  // They must not increment instret (Priv. 1.12, 3.3.1).
+  val countedRetire = (0 until coreWidth).map { w =>
+    rob.io.commit.arch_valids(w) && !rob.io.commit.uops(w).is_sys_pc2epc
+  }
+  csr.io.retire    := RegNext(PopCount(countedRetire)).resized
   csr.io.exception := RegNext(rob.io.com_xcpt.valid)
   // csr.io.pc used for setting EPC during exception or CSR.io.trace.
 
@@ -1149,7 +1154,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   // reading requires serializing the entire pipeline
   csr.io.fcsr_flags.valid   := rob.io.commit.fflags.valid
   csr.io.fcsr_flags.payload := rob.io.commit.fflags.payload.asBits
-  if (csr.io.set_fs_dirty != null) csr.io.set_fs_dirty := rob.io.commit.fflags.valid
+  if (csr.io.set_fs_dirty != null) {
+    // Upstream only uses fflags.valid. FP loads do not produce fflags, but
+    // they change an FP register and must mark FS Dirty (Priv. 1.12, 3.1.6.6).
+    val fpLoadCommitted = (0 until coreWidth).map { w =>
+      rob.io.commit.arch_valids(w) && rob.io.commit.uops(w).uses_ldq &&
+        rob.io.commit.uops(w).dst_rtype === RT_FLT
+    }.reduce(_ || _)
+    csr.io.set_fs_dirty := rob.io.commit.fflags.valid || fpLoadCommitted
+  }
 
   all_exe_units.foreach(i => i.io_fcsr_rm := csr.io.fcsr_rm)
   io.fcsr_rm := csr.io.fcsr_rm
