@@ -1456,6 +1456,19 @@ with it (`VmTestsSpec`; build with `tests/vm/build.sh`).
 
 ---
 
+### 19.5 Fetch PMP boundaries
+
+The parcel PMP checks in section 6.2.1 fix upstream issue #786 in the port.
+The full ACT4 rerun passes 604 of 620 tests, up from 589 of 620.
+All 15 fetch-PMP baseline failures pass. Both `SvPMP` physical-address
+cases still fail before the execute check because Sail truncates the
+store-fault virtual address in `mtval`. See `ACT4_TRIAGE.md`.
+Small and medium riscv-tests with RVFI each pass all 321 selected tests.
+The full VM suites each pass all four tests. The directed `fetch_pmp` test
+also passes on Sail. Large benchmarks pass all nine tests on the fix and on
+`3c0c707`. Every benchmark has the same cycle and retirement counts, so the
+measured IPC change is 0%. This does not measure the physical critical path.
+
 ## 20. Known differences and limitations
 
 **Kept from upstream (non-conformances):**

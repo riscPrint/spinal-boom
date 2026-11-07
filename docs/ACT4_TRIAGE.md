@@ -160,8 +160,73 @@ page boundaries. It repeats eight checks in bare mode and Sv39. It checks
 trap cause, `mepc`, and the faulting parcel address in `mtval`. Sail passes.
 The final directed DUT test passes on small and medium, one ELF and 16
 trap checks on each preset. Logs are `vm-directed-final.log` and
-`vm-directed-medium.log`. The full locked regressions are pending.
+`vm-directed-medium.log`. Full regression results follow below.
 
 Logs are in `target/fetch-pmp/`. `targeted-final.log` records the targeted
 ACT4 result. `fail-trace.log` records the first failing SvPMP check.
 `directed-sail.log` records the directed reference-model result.
+
+
+### Full regression results
+
+All full suites used `with-lock.sh boom`. ACT4 and riscv-tests used seed 1.
+ACT4 ran all 620 private ELFs from the corrected `marchid` build.
+It passed **604 of 620**, with 16 failures. The baseline passed 589 of 620.
+A comparison of the failing test names found exactly 15 repaired cases and
+no new failures. No test was canceled, ignored, or pending.
+
+The repaired baseline failures are:
+
+| Group | Tests now passing |
+|---|---|
+| `PMPSm` configuration | `cfg_A_tor_bot-00`, `cfg_A_tor_zero-00`, `cfg_tor_check-01-00` |
+| `PMPS`, `PMPSm`, `PMPU` | `na4_legal_lxwr-00` and `tor_legal_lxwr-02-00` in each group |
+| `PMPZca` | `aligned_na4-00`, `aligned_tor-00`, `cret_na4-00`, `cret_tor-00`, `misaligned_na4-00`, `misaligned_tor-00` |
+
+The separate final U-mode SvPMP trace also reports `mtval=0x140009014`
+on its first store access fault. Its Sail signature trace expects
+`0x40009014`, as in S-mode. Both remaining SvPMP failures are reference
+address-truncation mismatches before the execute check.
+
+Small riscv-tests with RVFI passed **321 of 321**. Medium with RVFI also
+passed **321 of 321**. Both runs used the existing three riscv-tests
+exclusions. No selected test was canceled, ignored, or pending.
+The small and medium VM suites each passed **4 of 4**.
+No VM test was canceled, ignored, or pending.
+
+Full run logs are `act4.log`, `svpmp-u-trace.log`, `riscv-small.log`,
+`riscv-medium.log`, `vm-small.log`, and `vm-medium.log` under
+`target/fetch-pmp/`.
+
+
+### Large benchmark comparison
+
+Both revisions passed all **9 of 9** benchmarks. The preset was large.
+Both used the same ELFs from
+`risc-v-workstation/examples/boom/out/arch/bench`, seed 1, and fixed memory
+latency 20. The baseline was the exact `3c0c707` implementation.
+Only the changed implementation source files were temporarily restored to
+that revision in `spinal-boom-pmp`. The branch did not change. The fixed
+sources were restored after the baseline run. No other worktree was built.
+
+Every benchmark has identical cycle and retirement counts on both revisions.
+The IPC change is **0% for each benchmark**. These are simulation cycle
+measurements. They do not measure the physical critical path.
+
+| Benchmark | Cycles, both | Retired instructions, both | IPC, both | IPC change |
+|---|---:|---:|---:|---:|
+| dhrystone | 114149 | 192025 | 1.6822 | 0% |
+| median | 4462 | 4000 | 0.8965 | 0% |
+| memcpy | 9152 | 5520 | 0.6031 | 0% |
+| multiply | 10007 | 26816 | 2.6797 | 0% |
+| qsort | 225130 | 122916 | 0.5460 | 0% |
+| rsort | 79090 | 146584 | 1.8534 | 0% |
+| spmv | 22044 | 28802 | 1.3066 | 0% |
+| towers | 4181 | 3263 | 0.7804 | 0% |
+| vvadd | 1267 | 2416 | 1.9069 | 0% |
+
+Logs are `target/fetch-pmp/bench-fixed.log` and `bench-master.log`.
+Raw result files are `bench-fixed.csv` and `bench-master.csv` in that directory.
+The complete sequential runner is `target/fetch-pmp/regress.sh`.
+`git diff --check` passed. The restored implementation sources match the
+implementation commit `8674c5b`.
