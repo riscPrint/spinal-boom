@@ -125,6 +125,12 @@ easy to revert.
   `ae_ptw` and `ae_final` separately, as rocket's TLB does; `ae_final` therefore no longer hides
   a permission page fault. Covered by `tests/vm/ae_ptw.S` (`VmTestsSpec`).
 
+* **Age-matrix partial selector reads the wrong age row** (`issue-unit-matrix.scala`).
+  Upstream uses `slots_age_matrix(i)` for every candidate `j` on issue port `i`.
+  With two ready entries, port 1 can have no oldest candidate and its assertion
+  fails. `IssueMatrixSpec` reproduces this failure with six slots and two ports.
+  The port uses `slots_age_matrix(j)`. The full selector already uses that row.
+
 ## Known non-conformances kept from upstream
 
 * **Fetch PMP granularity.** The I-TLB checks PMP over the whole fetch block

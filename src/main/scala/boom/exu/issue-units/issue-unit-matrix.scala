@@ -180,7 +180,9 @@ class IssueUnitAgeMatrix(
     val issue_oldest_oh = Vec.fill(issueWidth)(UInt(numIssueSlots bits))
     for (i <- 0 until issueWidth) {
       for (j <- 0 until numIssueSlots) {
-        issue_oldest_oh(i)(j) := !(slots_age_matrix(i) & iss_ready(i)).orR && iss_ready(i)(j)
+        // Upstream uses row i here. Each candidate must use its own age row.
+        // The two-ready-entry regression fails the upstream assertion otherwise.
+        issue_oldest_oh(i)(j) := !(slots_age_matrix(j) & iss_ready(i)).orR && iss_ready(i)(j)
       }
       assert(!iss_ready(i).orR || issue_oldest_oh(i).orR)
       assert(PopCount(issue_oldest_oh(i)) <= dispatchWidth)
