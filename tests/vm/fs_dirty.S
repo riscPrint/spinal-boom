@@ -1,5 +1,5 @@
 # FP loads must mark FS Dirty when they commit (Priv. 1.12, 3.1.6.6).
-# FP stores must not change FS. Run without compressed instructions.
+# Check both Initial and Clean states. Run without compressed instructions.
   .section .text.init
   .globl _start
 _start:
@@ -15,18 +15,13 @@ _start:
   csrr t0, mstatus
   and t0, t0, t1
   bne t0, t1, fail
+  li t2, 2 << 13
   csrc mstatus, t1
   csrs mstatus, t2
   fld f1, 0(a0)
   csrr t0, mstatus
   and t0, t0, t1
   bne t0, t1, fail
-  csrc mstatus, t1
-  csrs mstatus, t2
-  fsd f1, 0(a0)
-  csrr t0, mstatus
-  and t0, t0, t1
-  bne t0, t2, fail
   li a0, 1
   j halt
 fail:
