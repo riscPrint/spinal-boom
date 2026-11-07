@@ -500,8 +500,8 @@ The core's three-cycle CSR exception-vector delay uses data-only StageLinks via
 unconditional one-cycle flow without reset; retire and encoded trap-value delays
 are unconditional data-only stages. Encoding remains before the trap-value
 register and the existing current-cycle FTQ PC alignment remains after it.
-The ROB-flush flag delays share one data-only stage, and the delayed flush type,
-PC fragments and FTQ index share another; all of them captured every cycle in
+The ROB-flush flag delays keep independent captures. The delayed flush type,
+PC fragments and FTQ index share one data-only stage; all captured every cycle in
 `0cb0b69` (their RegNexts were declared inside the flush branches, which does
 not gate them), as did the three-cycle CSR vector. The hand-written commit-trace
 and RVFI observation paths are unchanged.
@@ -537,3 +537,32 @@ SRAM read-port and alignment registers (BIM, HBIM, Tourney, I-cache arrays,
 RAS read bypass), PTW replacement snapshots, the local-history write command,
 assertion-only delays, and the commit trace, RVFI and Konata observation paths.
 The unused `ShiftRegister`, `holdUnless` and `readAndHold` helpers are removed.
+
+Step 7 branch-register identity. Hunks 0-2 of the `core.scala` change in
+`85535e5` reproduce the giga `rv64ua-v-amoand_d` difference by themselves.
+The counter, debug JALR, interrupt and FTQ response-select subset matches.
+The branch links add no enable, kill or cycle. They change the names of the
+unreset branch registers. This Verilator build uses scoped, name-dependent
+seeds for unreset values. The changed initial state reaches a wrong-path
+AcquireBlock at cycle 11019 and a Konata PC label at cycle 11033. The
+architectural commit trace stays equal.
+
+Keep the original registered containers and their names. Delay the complete
+`Vec[Flow[BrResolutionInfo]]` as data, including each valid bit. This gives the
+first stage its original `brinfos_*` registers without a separate Node valid.
+Name that registered payload `brinfos`, and name the merged stage `b2`.
+Both stages capture every cycle without reset. The generated giga RTL has the
+same names and widths for all 707 branch-register fields as the original
+register implementation.
+
+Also keep the independent ROB-flush captures at their original consumers.
+Sharing unreset registers merges their distinct initial values. Restoring only
+the branch-register names matches giga but changes a boom2 wrong-path Konata
+label. Restoring the independent flush captures as well matches both cases.
+The changed PCs equal unreset FTQ `ras_top` values (entry 39 in giga and entry 9
+in boom2); the reference PCs equal the unreset `ras_0` values, with bit 0 cleared.
+Thus the observable difference is retained RAS state from initialization.
+No data equation, capture enable, reset, kill or stage position changes.
+The independent one-cycle flush controls stay as `RegNext`; the branch stages
+and ROB-flush payload stage use StageLinks. The goldens and comparison rules
+stay unchanged. The five incorrect enable fixes remain excluded.
