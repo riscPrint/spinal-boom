@@ -216,7 +216,7 @@ five parser tests and eight-cycle Chisel/Icarus experiment pass.
 TileLink beat, Konata transitions including flushes, and selected per-cycle
 frontend/LSU/cache controls in one deterministic simulation per ELF/preset.
 Instrumentation uses the existing off-by-default Konata probe; core logic is
-unchanged. The reference is `0cb0b69`. See
+unchanged. The integration reference is `39fb5f6`. See
 [commands, trace formats and coverage limits](docs/CYCLE_EQUIVALENCE.md).
 
 ## Pipelining API
@@ -631,3 +631,26 @@ No data equation, capture enable, reset, kill or stage position changes.
 The independent one-cycle flush controls stay as `RegNext`; the branch stages
 and ROB-flush payload stage use StageLinks. The goldens and comparison rules
 stay unchanged. The five incorrect enable fixes remain excluded.
+
+## Master pipeline integration
+
+Merge master `39fb5f6` with pipeline step 7 `fd3d223`. Keep the age-matrix
+issue unit off by default. Keep the FP-load FS Dirty update and load-load
+ordering replay. The CSR retire stage now delays `PopCount(countedRetire)`;
+ECALL and EBREAK stay excluded from `instret`. Its stage count is unchanged.
+
+The added cycle observations now live in `src/test` as `CycleObservations`.
+They add output ports during simulation elaboration. This lets the golden
+checkout use the exact `39fb5f6` production sources. The port names remain
+explicit. No core signal receives a new driver.
+
+The golden root is `/Users/mahir/.cache/spinal-boom/golden-39fb5f6`.
+See `docs/CYCLE_EQUIVALENCE.md` for the re-record procedure. Earlier results
+in this file refer to their stated branch and reference commit.
+
+Integration validation: quick 265/265, extra 180/180 and full 1,665/1,665
+match the new master goldens with zero differences. Specs pass 52/52,
+small ISA with RVFI 321/321, VM 3/3, load-load ordering 1/1 and matrix
+3/3. ACT4 gives 589 pass and 31 fail out of 620, with exactly the same
+failing names as the prior seed-1 baseline. No new failure is waived.
+See `docs/PIPELINE_INTEGRATION.md` for conflict decisions and evidence paths.

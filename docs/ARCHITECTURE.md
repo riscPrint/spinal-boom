@@ -1477,3 +1477,34 @@ with it (`VmTestsSpec`; build with `tests/vm/build.sh`).
 | `formal/` | riscv-formal wrapper, checks, run script, RVFI monitors |
 | `act4/` | ACT4 DUT configuration and build script |
 | `PORTING_NOTES.md` | every Chisel→Spinal decision, deliberate differences, bug notes |
+
+## Stage chains after the pipeline integration
+
+Transaction delays use `spinal.lib.misc.pipeline` from SpinalHDL 1.15.0.
+`FixedPipeline` implements fixed delays. `BranchPipeline.boundary` applies
+branch kill and mask updates before each register. `HoldStageLink` keeps the
+rename and arbitration hold rules. `GatedPipeline` implements registers with
+explicit capture enables. Build links only after their consumers exist.
+See `PORTING_NOTES.md` for valid, reset, payload and enable conventions.
+
+The frontend, predictor banks, execute paths, D-cache stages, LSU paths and
+PTW L2 lookup use these helpers. The integration keeps master's FP-load
+FS Dirty update, trap exclusion from `instret`, load-load replay and optional
+age-matrix issue unit. The default issue unit stays unchanged.
+
+Manual registers remain for independent unreset ROB-flush captures, SRAM
+read ports and alignment, freelist allocation selection, PTW replacement
+snapshots and event flags, and MSHR metadata waits and hazard counters.
+Queues, FSMs, CAMs, counters, pointers, rename storage and ROB storage remain
+state. Assertion and trace delays remain observation code. The PTW L2 lookup
+is already converted. It is not a remaining chain.
+
+The cycle gate uses master `39fb5f6` behavior recordings. Added observations
+live in the test tree. See `docs/CYCLE_EQUIVALENCE.md` for coverage limits and
+for re-recording after an intentional behavior change. A matching trace is
+bounded simulation evidence.
+
+Integration results: quick 265/265, extra 180/180 and full 1,665/1,665
+match with zero differences. Specs pass 52/52, small ISA with RVFI 321/321,
+VM 3/3, load-load ordering 1/1 and matrix 3/3. ACT4 remains 589/620 with
+the same 31 failing names. See `PIPELINE_INTEGRATION.md` for evidence.

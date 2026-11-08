@@ -1,14 +1,18 @@
 # Cycle-equivalence harness
 
 This regression gate compares observations from the current core with recordings
-from `0cb0b69`, before replacing manual stage chains with Spinal's pipeline API.
-All new instrumentation is in the test tree or the existing optional Konata probe.
+from `39fb5f6`, before merging the stage-chain refactor into master.
+All new cycle-equivalence instrumentation is in the test tree.
+`CycleObservations` adds output ports during test elaboration. The existing
+optional Konata probe stays in the simulation top.
 The probe is off by default and does not drive the core.
 
 ## Run
 
 ```sh
 source env.sh
+export EQ_GOLDEN=/Users/mahir/.cache/spinal-boom/golden-39fb5f6
+export EQ_PARALLELISM=2 EQ_CPUS_PER_WORKER=5
 export PATH=/opt/homebrew/opt/riscv-gnu-toolchain/bin:$PATH
 tests/vm/build.sh
 # Build gem5/bench/build/bare/*.riscv using gem5/bench/Makefile, or supply BENCH_DIR.
@@ -216,3 +220,37 @@ attempted golden overwrite before simulation. The reference ISA ELFs were reused
 from `../ref/riscv-tests/build/isa`, the nine benchmark ELFs were copied from the
 existing main checkout's bare build, and the VM ELF was built in this worktree;
 the recorded SHA-256 contracts pin those exact inputs.
+
+## Re-record after an intentional behavior change
+
+The integration reference is master `39fb5f6`. Use
+`EQ_GOLDEN=/Users/mahir/.cache/spinal-boom/golden-39fb5f6` for this reference.
+The old `0cb0b69` recordings apply only to the original pipeline branch.
+
+Record in a separate checkout of the intended behavior commit. Copy only the
+harness scripts and test-tree instrumentation from this branch. Do not copy
+`src/main` changes. Check `git diff <reference> -- src/main` before recording;
+it must be empty. `CycleObservations.scala` supplies the added output ports
+from the test tree, so recording does not need a production-source patch.
+
+Build the VM ELFs with `tests/vm/build.sh`. Use the same ISA and benchmark
+ELFs for record and check. Set `EQ_PARALLELISM=2`, `EQ_CPUS_PER_WORKER=5`,
+`BENCH_DIR` and a fresh `EQ_GOLDEN`. Run each command under
+`../risc-v-workstation/scripts/with-lock.sh boom` after `source env.sh`:
+
+```sh
+EQ_MODE=record EQ_SET=quick scripts/cycle-equivalence.py
+EQ_MODE=record EQ_SET=extra scripts/cycle-equivalence.py
+EQ_MODE=record EQ_SET=full scripts/cycle-equivalence.py
+```
+
+Then run all three sets with `EQ_MODE=check` from the integration checkout.
+Do not replace goldens to hide a refactor difference. Identify an intentional
+behavior change first. Keep its reference SHA and the input manifests with the
+results. With the three master VM programs, quick has 265 cases, extra has
+180, and full has 1,665. The old totals had one VM program.
+
+Integration validation at `f4311d5`: record and check completed quick 265/265,
+extra 180/180 and full 1,665/1,665, with zero check differences. The added
+master VM tests explain the larger totals. See `PIPELINE_INTEGRATION.md`
+for report paths and the separate suite results.
