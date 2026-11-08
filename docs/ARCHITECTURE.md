@@ -1484,10 +1484,17 @@ All 15 fetch-PMP baseline failures pass. Both `SvPMP` physical-address
 cases still fail before the execute check because Sail truncates the
 store-fault virtual address in `mtval`. See `ACT4_TRIAGE.md`.
 Small and medium riscv-tests with RVFI each pass all 321 selected tests.
-The full VM suites each pass all four tests. The directed `fetch_pmp` test
-also passes on Sail. Large benchmarks pass all nine tests on the fix and on
-`3c0c707`. Every benchmark has the same cycle and retirement counts, so the
-measured IPC change is 0%. This does not measure the physical critical path.
+The full VM suites each pass all four tests. After the first-parcel request
+kill, the expanded directed `fetch_pmp` test passes 41 trap checks on each
+preset. It covers S-mode, U-mode, a cold fully denied region with a TileLink
+request guard, and page-fault priority. The original directed ELF passed on
+Sail; the expanded ELF was not run on Sail.
+The 2026-11-08 rerun again passes ACT4 604/620 with the exact same 16 failure
+names. Large benchmarks pass all nine tests on the fix and on exact `master`
+sources at `39fb5f6`, built only in this worktree. Every benchmark has identical
+cycle and retirement counts and IPC. Every cycle difference is 0. This does
+not measure the physical critical path. See `ACT4_TRIAGE.md` for logs and
+source-restoration checks.
 
 ## 20. Known differences and limitations
 

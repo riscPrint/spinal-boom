@@ -4,7 +4,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 /**
  * Directed virtual-memory tests from tests/vm (build them with tests/vm/build.sh).
- * Each also passes on the Sail model with act4/boom-rv64gc/sail.json.
+ * Each ELF reports pass/fail through tohost.
  * VM_TESTS_VERBOSE=1 prints the retirement trace.
  */
 class VmTestsSpec extends AnyFunSuite {

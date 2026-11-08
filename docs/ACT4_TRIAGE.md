@@ -255,3 +255,51 @@ U-accessible leaf mappings and checks the U-mode ECALL cause.
 
 The directed test passes on small and medium. Logs are
 `target/fetch-pmp-review/directed-small.log` and `directed-medium.log`.
+
+
+### Blocking-review full regression, 2026-11-08
+
+The fix was tested after rebasing on `master` at `39fb5f6`. The original
+fetch-PMP implementation is `9a24662`. The request-kill fix is `d6aaf48`.
+The U-mode directed extension is `c0e517c`.
+
+All full suites ran in sequence under `with-lock.sh boom`, at nice level 10,
+with two JVM processors. ACT4 used the read-only private corrected-marchid
+ELFs under `spinal-boom-act4/target/act4-triage/final-elfs/boom-rv64gc/elfs`.
+ACT4 and riscv-tests used seed 1. Both ISA presets enabled RVFI.
+
+| Check | Result |
+|---|---:|
+| Directed fetch PMP, small | 1/1 ELF, 41 trap checks |
+| Directed fetch PMP, medium | 1/1 ELF, 41 trap checks |
+| Full ACT4, small | 604/620, 16 failures |
+| riscv-tests, small, RVFI | 321/321 |
+| riscv-tests, medium, RVFI | 321/321 |
+| Full VM, small | 4/4 |
+| Full VM, medium | 4/4 |
+| Large benchmarks, fix | 9/9 |
+| Large benchmarks, master | 9/9 |
+
+The ACT4 failure names exactly match the earlier full run in
+`target/fetch-pmp/act4.log`. No failure was added or removed. ACT4 returns
+exit code 1 for these 16 failures. All other suite commands return 0.
+The expanded directed ELF was not run on Sail.
+
+The large benchmark runs used the specified `examples/boom/out/arch/bench`
+ELFs, seed 1, and fixed memory latency 20. The master baseline used the exact
+`39fb5f62d9906e41bbf76580d03cbef4e5b62d27` implementation sources. Those six
+source files were temporarily substituted in this worktree. The branch did
+not change. The fixed sources were then restored and checked byte for byte
+against their backups. They also match the implementation commit. No other
+worktree was built or edited.
+
+All nine CSV rows match exactly: benchmark name, cycles, retired instructions,
+and IPC. Every cycle difference is **0**. The cycle values match the large
+benchmark table above. These are RTL simulation results, not physical timing
+measurements.
+
+Logs, both benchmark CSV files, the sequential runner, and its source backups
+are in `target/fetch-pmp-review/`. The suite logs are `act4.log`,
+`riscv-small.log`, `riscv-medium.log`, `vm-small.log`, `vm-medium.log`,
+`bench-fixed.log`, and `bench-master.log`. `results.txt` records exit codes.
+`git diff --check` passed after restoration.
