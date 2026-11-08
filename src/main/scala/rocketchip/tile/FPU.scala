@@ -419,8 +419,9 @@ class FPToInt(implicit p: Parameters) extends FPUModule()(p) {
     val out = master(Flow(new FPToIntOutput))
   }
 
-  val inp = RegNextWhen(io.in.payload, io.in.valid)
-  val valid = RegNext(io.in.valid)
+  val inputStage = FixedPipeline(io.in.valid, io.in.payload, 1, resetValid = false)
+  val inp = inputStage.payload
+  val valid = inputStage.valid
 
   val dcmp = new hardfloat.CompareRecFN(maxExpWidth, maxSigWidth)
   dcmp.io.a := inp.in1
@@ -494,7 +495,7 @@ class IntToFP(val latency: Int)(implicit p: Parameters) extends FPUModule()(p) {
     val out = master(Flow(new FPResult))
   }
 
-  val inp = Pipe(io.in)
+  val inp = FixedPipeline(io.in)
   val tag = inp.payload.typeTagIn
 
   val mux = new FPResult
@@ -530,7 +531,7 @@ class IntToFP(val latency: Int)(implicit p: Parameters) extends FPUModule()(p) {
     mux.exc := exc.read(tag.resize(log2Up(exc.size))).asBits
   }
 
-  io.out << Pipe(inp.valid, mux, latency - 1)
+  io.out << FixedPipeline(inp.valid, mux, latency - 1)
 }
 
 class FPToFP(val latency: Int)(implicit p: Parameters) extends FPUModule()(p) {
@@ -540,7 +541,7 @@ class FPToFP(val latency: Int)(implicit p: Parameters) extends FPUModule()(p) {
     val lt = IN Bool() // from FPToInt
   }
 
-  val inp = Pipe(io.in)
+  val inp = FixedPipeline(io.in)
 
   val signNum = Mux(inp.payload.rm(1), inp.payload.in1 ^ inp.payload.in2, Mux(inp.payload.rm(0), ~inp.payload.in2, inp.payload.in2))
   val fsgnj = Cat(signNum(fLen), inp.payload.in1(fLen - 1 downto 0)).asUInt
@@ -594,7 +595,7 @@ class FPToFP(val latency: Int)(implicit p: Parameters) extends FPUModule()(p) {
     }
   }
 
-  io.out << Pipe(inp.valid, mux, latency - 1)
+  io.out << FixedPipeline(inp.valid, mux, latency - 1)
 }
 
 class MulAddRecFNPipe(latency: Int, expWidth: Int, sigWidth: Int) extends Component {
@@ -630,12 +631,12 @@ class MulAddRecFNPipe(latency: Int, expWidth: Int, sigWidth: Int) extends Compon
       mulAddRecFNToRaw_preMul.io.mulAddC
 
   val postmul_regs = if (latency > 0) 1 else 0
-  mulAddRecFNToRaw_postMul.io.fromPreMul   := Pipe(io.validin, mulAddRecFNToRaw_preMul.io.toPostMul, postmul_regs).payload
-  mulAddRecFNToRaw_postMul.io.mulAddResult := Pipe(io.validin, mulAddResult, postmul_regs).payload
-  mulAddRecFNToRaw_postMul.io.roundingMode := Pipe(io.validin, io.roundingMode, postmul_regs).payload
-  val roundingMode_stage0                   = Pipe(io.validin, io.roundingMode, postmul_regs).payload
-  val detectTininess_stage0                 = Pipe(io.validin, io.detectTininess, postmul_regs).payload
-  val valid_stage0                          = Pipe(io.validin, False, postmul_regs).valid
+  mulAddRecFNToRaw_postMul.io.fromPreMul   := FixedPipeline(io.validin, mulAddRecFNToRaw_preMul.io.toPostMul, postmul_regs).payload
+  mulAddRecFNToRaw_postMul.io.mulAddResult := FixedPipeline(io.validin, mulAddResult, postmul_regs).payload
+  mulAddRecFNToRaw_postMul.io.roundingMode := FixedPipeline(io.validin, io.roundingMode, postmul_regs).payload
+  val roundingMode_stage0                   = FixedPipeline(io.validin, io.roundingMode, postmul_regs).payload
+  val detectTininess_stage0                 = FixedPipeline(io.validin, io.detectTininess, postmul_regs).payload
+  val valid_stage0                          = FixedPipeline(io.validin, False, postmul_regs).valid
 
   //------------------------------------------------------------------------
   //------------------------------------------------------------------------
@@ -643,11 +644,11 @@ class MulAddRecFNPipe(latency: Int, expWidth: Int, sigWidth: Int) extends Compon
   val roundRawFNToRecFN = new hardfloat.RoundRawFNToRecFN(expWidth, sigWidth, 0)
 
   val round_regs = if (latency == 2) 1 else 0
-  roundRawFNToRecFN.io.invalidExc         := Pipe(valid_stage0, mulAddRecFNToRaw_postMul.io.invalidExc, round_regs).payload
-  roundRawFNToRecFN.io.in                 := Pipe(valid_stage0, mulAddRecFNToRaw_postMul.io.rawOut, round_regs).payload
-  roundRawFNToRecFN.io.roundingMode       := Pipe(valid_stage0, roundingMode_stage0, round_regs).payload
-  roundRawFNToRecFN.io.detectTininess     := Pipe(valid_stage0, detectTininess_stage0, round_regs).payload
-  io.validout                             := Pipe(valid_stage0, False, round_regs).valid
+  roundRawFNToRecFN.io.invalidExc         := FixedPipeline(valid_stage0, mulAddRecFNToRaw_postMul.io.invalidExc, round_regs).payload
+  roundRawFNToRecFN.io.in                 := FixedPipeline(valid_stage0, mulAddRecFNToRaw_postMul.io.rawOut, round_regs).payload
+  roundRawFNToRecFN.io.roundingMode       := FixedPipeline(valid_stage0, roundingMode_stage0, round_regs).payload
+  roundRawFNToRecFN.io.detectTininess     := FixedPipeline(valid_stage0, detectTininess_stage0, round_regs).payload
+  io.validout                             := FixedPipeline(valid_stage0, False, round_regs).valid
 
   roundRawFNToRecFN.io.infiniteExc := False
 
@@ -664,17 +665,16 @@ class FPUFMAPipe(val latency: Int, val t: FType)(implicit p: Parameters) extends
     val out = master(Flow(new FPResult))
   }
 
-  val valid = RegNext(io.in.valid)
-  val inp = Reg(new FPInput)
-  when(io.in.valid) {
-    val one = U(1) << (t.sig + t.exp - 1)
-    val zero = (io.in.payload.in1 ^ io.in.payload.in2) & (U(1, fLen + 1 bits) << (t.sig + t.exp)).resize(fLen + 1)
-    val cmd_fma = io.in.payload.ren3
-    val cmd_addsub = io.in.payload.swap23
-    inp := io.in.payload
-    when(cmd_addsub) { inp.in2 := one.resized }
-    when(!(cmd_fma || cmd_addsub)) { inp.in3 := zero }
-  }
+  val adjusted = CombInit(io.in.payload)
+  val one = U(1) << (t.sig + t.exp - 1)
+  val zero = (io.in.payload.in1 ^ io.in.payload.in2) & (U(1, fLen + 1 bits) << (t.sig + t.exp)).resize(fLen + 1)
+  val cmd_fma = io.in.payload.ren3
+  val cmd_addsub = io.in.payload.swap23
+  when(cmd_addsub) { adjusted.in2 := one.resized }
+  when(!(cmd_fma || cmd_addsub)) { adjusted.in3 := zero }
+  val inputStage = FixedPipeline(io.in.valid, adjusted, 1, resetValid = false)
+  val inp = inputStage.payload
+  val valid = inputStage.valid
 
   val fma = new MulAddRecFNPipe((latency - 1) min 2, t.exp, t.sig)
   fma.io.validin := valid
@@ -689,5 +689,5 @@ class FPUFMAPipe(val latency: Int, val t: FType)(implicit p: Parameters) extends
   res.data := sanitizeNaN(fma.io.out, t).resized
   res.exc := fma.io.exceptionFlags
 
-  io.out << Pipe(fma.io.validout, res, (latency - 3) max 0)
+  io.out << FixedPipeline(fma.io.validout, res, (latency - 3) max 0)
 }

@@ -202,7 +202,7 @@ class PipelinedMultiplier(width: Int, latency: Int, nXpr: Int = 32) extends Comp
     val resp = master(Flow(MultiplierResp(width, log2Ceil(nXpr))))
   }
 
-  val inp = Pipe(io.req)
+  val inp = FixedPipeline(io.req)
 
   val decode = List(
     FN_MUL    -> List(N, X, X),
@@ -222,9 +222,9 @@ class PipelinedMultiplier(width: Int, latency: Int, nXpr: Int = 32) extends Comp
   val muxed = Mux(cmdHi, prodU(2 * width - 1 downto width),
     Mux(cmdHalf, prodU(width / 2 - 1 downto 0).sextTo(width), prodU(width - 1 downto 0)))
 
-  val resp = Pipe(inp, latency - 1)
+  val resp = FixedPipeline(inp, latency - 1)
   io.resp.valid := resp.valid
   io.resp.payload.tag := resp.payload.tag
-  io.resp.payload.data := Pipe(inp.valid, muxed, latency - 1).payload
-  io.resp.payload.full_data := Pipe(inp.valid, prod, latency - 1).payload.asUInt.resized
+  io.resp.payload.data := FixedPipeline(inp.valid, muxed, latency - 1).payload
+  io.resp.payload.full_data := FixedPipeline(inp.valid, prod, latency - 1).payload.asUInt.resized
 }

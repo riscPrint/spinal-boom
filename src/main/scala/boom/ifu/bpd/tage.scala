@@ -81,7 +81,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
 
   val mems = Seq((f"tage_l$histLength", nRows, bankWidth * tageEntrySz))
 
-  val s2_tag       = RegNext(s1_tag)
+  val s2_tag       = FixedPipeline.delay(s1_tag, 1)
 
   val s2_req_rtage = Vec.fill(bankWidth)(TageEntry())
   val s2_req_rus = Vec.fill(bankWidth*2)(Bool())
@@ -108,7 +108,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
   val update_wdata = Vec.fill(bankWidth)(TageEntry())
   val wen = CombInit(doing_reset || io.update_mask.reduce(_||_))
   val rdata = if (singlePorted) table.read(s1_hashed_idx, !wen && io.f1_req_valid) else table.read(s1_hashed_idx, io.f1_req_valid)
-  when (RegNext(wen) && Bool(singlePorted)) {
+  when (FixedPipeline.delay(wen, 1) && Bool(singlePorted)) {
     s2_req_rtage := Vec.fill(bankWidth)(TageEntry()).getZero
   } otherwise {
     s2_req_rtage := rdata
@@ -210,8 +210,8 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
   val tt = params.tableInfo map {
     case (n, l, s) => {
       val t = new TageTable(n, s, l, params.uBitPeriod, params.singlePorted)
-      t.io.f1_req_valid := RegNext(io.f0_valid)
-      t.io.f1_req_pc    := RegNext(bankAlign(io.f0_pc))
+      t.io.f1_req_valid := s1_valid
+      t.io.f1_req_pc    := s1_pc
       t.io.f1_req_ghist := io.f1_ghist
       (t, t.mems)
     }
@@ -220,7 +220,7 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
   val mems = tt.map(_._2).flatten
 
   val f2_resps = Vec(tables.map(_.io.f2_resp))
-  val f3_resps = RegNext(f2_resps)
+  val f3_resps = predAt(f2_resps, 2, 3)
 
   val s1_update_meta = TageMeta(); s1_update_meta.assignFromBits(s1_update.payload.meta.asBits.resized)
   val s1_update_mispredict_mask = UIntToOH(s1_update.payload.cfi_idx.payload, bankWidth) &
@@ -255,13 +255,27 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
       s2_alt_provider = Mux(hit, s2_provider, s2_alt_provider)
       s2_provider = Mux(hit, U(i, pw bits), s2_provider)
     }
-    val s3_provided = RegNext(s2_provided)
-    val s3_provider = RegNext(s2_provider)
-    val s3_alt_provided = RegNext(s2_alt_provided)
-    val s3_alt_provider = RegNext(s2_alt_provider)
-
-    val prov = RegNext(f2_resps.at(s2_provider)(w).payload)
-    val alt  = RegNext(f2_resps.at(s2_alt_provider)(w).payload)
+    val selection = new Bundle {
+      val provided = Bool()
+      val provider = UInt(pw bits)
+      val alt_provided = Bool()
+      val alt_provider = UInt(pw bits)
+      val prov = TageResp()
+      val alt = TageResp()
+    }
+    selection.provided := s2_provided
+    selection.provider := s2_provider
+    selection.alt_provided := s2_alt_provided
+    selection.alt_provider := s2_alt_provider
+    selection.prov := f2_resps.at(s2_provider)(w).payload
+    selection.alt := f2_resps.at(s2_alt_provider)(w).payload
+    val s3_selection = predAt(selection, 2, 3)
+    val s3_provided = s3_selection.provided
+    val s3_provider = s3_selection.provider
+    val s3_alt_provided = s3_selection.alt_provided
+    val s3_alt_provider = s3_selection.alt_provider
+    val prov = s3_selection.prov
+    val alt = s3_selection.alt
 
     io.resp.f3(w).taken := Mux(s3_provided,
       Mux(prov.ctr === 3 || prov.ctr === 4,
@@ -336,18 +350,24 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
     }
   }
 
+  val s2_update_mask = updAt(s1_update_mask, 1, 2)
+  val s2_update_taken = updAt(s1_update_taken, 1, 2)
+  val s2_update_alloc = updAt(s1_update_alloc, 1, 2)
+  val s2_update_old_ctr = updAt(s1_update_old_ctr, 1, 2)
+  val s2_update_u_mask = updAt(s1_update_u_mask, 1, 2)
+  val s2_update_u = updAt(s1_update_u, 1, 2)
   for (i <- 0 until tageNTables) {
     for (w <- 0 until bankWidth) {
-      tables(i).io.update_mask(w)    := RegNext(s1_update_mask(i)(w))
-      tables(i).io.update_taken(w)   := RegNext(s1_update_taken(i)(w))
-      tables(i).io.update_alloc(w)   := RegNext(s1_update_alloc(i)(w))
-      tables(i).io.update_old_ctr(w) := RegNext(s1_update_old_ctr(i)(w))
+      tables(i).io.update_mask(w)    := s2_update_mask(i)(w)
+      tables(i).io.update_taken(w)   := s2_update_taken(i)(w)
+      tables(i).io.update_alloc(w)   := s2_update_alloc(i)(w)
+      tables(i).io.update_old_ctr(w) := s2_update_old_ctr(i)(w)
 
-      tables(i).io.update_u_mask(w) := RegNext(s1_update_u_mask(i)(w)).lsb
-      tables(i).io.update_u(w)      := RegNext(s1_update_u(i)(w))
+      tables(i).io.update_u_mask(w) := s2_update_u_mask(i)(w).lsb
+      tables(i).io.update_u(w)      := s2_update_u(i)(w)
     }
-    tables(i).io.update_pc    := RegNext(s1_update.payload.pc)
-    tables(i).io.update_hist  := RegNext(s1_update.payload.ghist)
+    tables(i).io.update_pc    := upd(2)(UPDATE).payload.pc
+    tables(i).io.update_hist  := upd(2)(UPDATE).payload.ghist
   }
 
   io.f3_meta := f3_meta.asBits.asUInt.resized

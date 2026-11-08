@@ -224,8 +224,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   // --------------------------------------
   // Dealing with branch resolutions
 
+  // Keep independent unreset flush captures at each consumer.
+  // Sharing these captures changes their simulation initial values.
+
   // The individual branch resolutions from each ALU
-  val brinfos = Reg(Vec.fill(coreWidth)(Flow(new BrResolutionInfo)))
+  val brinfoInputs = Vec.fill(coreWidth)(Flow(new BrResolutionInfo))
+  val brinfos = FixedPipeline.delay(brinfoInputs, 1)
+    .setName("brinfos")
 
   // "Merged" branch update info from all ALUs
   // brmask contains masks for rapidly clearing mispredicted instructions
@@ -233,12 +238,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   //           brindices is delayed a cycle
   val brupdate  = new BrUpdateInfo
   val b1    = new BrUpdateMasks
-  val b2    = Reg(new BrResolutionInfo)
+  val b2Input = new BrResolutionInfo
+  val b2    = FixedPipeline.delay(b2Input, 1).setName("b2")
 
   brupdate.b1 := b1
   brupdate.b2 := b2
 
-  for ((b, a) <- brinfos zip alu_exe_units) {
+  for ((b, a) <- brinfoInputs zip alu_exe_units) {
     b.payload := UpdateBrMask(brupdate, a.io_brinfo.payload)
     b.valid := a.io_brinfo.valid && !rob.io.flush.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), a.io_brinfo.payload)
   }
@@ -249,13 +255,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   val live_brinfos      = brinfos.map(br => br.valid && br.payload.mispredict && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), br.payload.uop))
   val mispredict_val    = live_brinfos.reduce(_||_)
 
-  b2.mispredict  := mispredict_val
-  b2.cfi_type    := Mux1H(live_brinfos, brinfos.map(_.payload.cfi_type))
-  b2.taken       := Mux1H(live_brinfos, brinfos.map(_.payload.taken))
-  b2.pc_sel      := Mux1H(live_brinfos, brinfos.map(_.payload.pc_sel))
-  b2.uop         := UpdateBrMask(brupdate, PriorityMux(live_brinfos, brinfos.map(_.payload.uop)))
-  b2.jalr_target := Mux1H(live_brinfos, brinfos.map(_.payload.jalr_target))
-  b2.target_offset := Mux1H(live_brinfos, brinfos.map(_.payload.target_offset))
+  b2Input.mispredict  := mispredict_val
+  b2Input.cfi_type    := Mux1H(live_brinfos, brinfos.map(_.payload.cfi_type))
+  b2Input.taken       := Mux1H(live_brinfos, brinfos.map(_.payload.taken))
+  b2Input.pc_sel      := Mux1H(live_brinfos, brinfos.map(_.payload.pc_sel))
+  b2Input.uop         := UpdateBrMask(brupdate, PriorityMux(live_brinfos, brinfos.map(_.payload.uop)))
+  b2Input.jalr_target := Mux1H(live_brinfos, brinfos.map(_.payload.jalr_target))
+  b2Input.target_offset := Mux1H(live_brinfos, brinfos.map(_.payload.target_offset))
 
   val oldest_mispredict_ftq_idx = Mux1H(live_brinfos, brinfos.map(_.payload.uop.ftq_idx))
 
@@ -334,7 +340,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   io.ifu.enable_bpd := custom_csrs.enableBPD
 
   val icache_blocked = False
-  csr.io.counters foreach { c => c.inc := RegNext(perfEvents.evaluate(c.eventSel)).asUInt.resized }
+  csr.io.counters foreach { c => c.inc := FixedPipeline.delay(perfEvents.evaluate(c.eventSel), 1).asUInt.resized }
 
   //****************************************
   // Time Stamp Counter & Retired Instruction Counter
@@ -430,8 +436,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
 
   io.ifu.flush_icache := (0 until coreWidth).map { i =>
     (rob.io.commit.arch_valids(i) && rob.io.commit.uops(i).is_fencei) ||
-    (RegNext(dec_valids(i) && dec_uops(i).is_jalr && csr.io.status.debug))
+    FixedPipeline.delay(dec_valids(i) && dec_uops(i).is_jalr && csr.io.status.debug, 1)
   }.reduce(_||_)
+
+  val csr_evec_delayed = FixedPipeline.delay(csr.io.evec, 3)
 
   // TODO FIX THIS HACK
   // The below code works because of two quirks with the flush mechanism
@@ -442,10 +450,21 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   //       ERETs are reported to the CSR two cycles before we send the flush
   //       Exceptions are reported to the CSR on the cycle we send the flush
   // This discrepency should be resolved elsewhere.
+  // Delayed ROB-flush fields: one unconditional, uninitialised data stage
+  // (the original RegNexts were declared inside the branches, so free-running).
+  val flushInfo = new Bundle {
+    val flush_typ = cloneOf(rob.io.flush.payload.flush_typ)
+    val pc_lob    = cloneOf(rob.io.flush.payload.pc_lob)
+    val edge_inst = Bool()
+    val is_rvc    = Bool()
+    val ftq_idx   = cloneOf(rob.io.flush.payload.ftq_idx)
+  }
+  flushInfo.assignSomeByName(rob.io.flush.payload)
+  val delayed_flush = FixedPipeline.delay(flushInfo, 1)
   when (RegNext(rob.io.flush.valid)) {
     io.ifu.redirect_val   := True
     io.ifu.redirect_flush := True
-    val flush_typ = RegNext(rob.io.flush.payload.flush_typ)
+    val flush_typ = delayed_flush.flush_typ
     // Clear the global history when we flush the ROB (exceptions, AMOs, unique instructions, etc.)
     val new_ghist = new GlobalHistory
     new_ghist.assignFromBits(B(0, new_ghist.getBitsWidth bits))
@@ -454,17 +473,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     io.ifu.redirect_ghist := new_ghist
     when (FlushTypes.useCsrEvec(flush_typ)) {
       io.ifu.redirect_pc  := Mux(flush_typ === FlushTypes.eret,
-                                 ShiftRegister(csr.io.evec, 3),
+                                 csr_evec_delayed,
                                  csr.io.evec)
     } otherwise {
       val flush_pc = (AlignPCToBoundary(io.ifu.rrd_ftq_resps(0).pc, icBlockBytes)
-                      + RegNext(rob.io.flush.payload.pc_lob).resize(vaddrBitsExtended)
-                      - Mux(RegNext(rob.io.flush.payload.edge_inst), U(2, vaddrBitsExtended bits), U(0, vaddrBitsExtended bits)))
-      val flush_pc_next = flush_pc + Mux(RegNext(rob.io.flush.payload.is_rvc), U(2, vaddrBitsExtended bits), U(4, vaddrBitsExtended bits))
+                      + delayed_flush.pc_lob.resize(vaddrBitsExtended)
+                      - Mux(delayed_flush.edge_inst, U(2, vaddrBitsExtended bits), U(0, vaddrBitsExtended bits)))
+      val flush_pc_next = flush_pc + Mux(delayed_flush.is_rvc, U(2, vaddrBitsExtended bits), U(4, vaddrBitsExtended bits))
       io.ifu.redirect_pc := Mux(FlushTypes.useSamePC(flush_typ),
                                 flush_pc, flush_pc_next)
     }
-    io.ifu.redirect_ftq_idx := RegNext(rob.io.flush.payload.ftq_idx)
+    io.ifu.redirect_ftq_idx := delayed_flush.ftq_idx
   } elsewhen (brupdate.b2.mispredict && !RegNext(rob.io.flush.valid)) {
     val block_pc = AlignPCToBoundary(io.ifu.rrd_ftq_resps(0).pc, icBlockBytes)
     val uop_maybe_pc = block_pc | brupdate.b2.uop.pc_lob.resize(vaddrBitsExtended)
@@ -543,8 +562,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     decode_units(w).io.enq.uop         := dec_fbundle.uops(w).payload
     decode_units(w).io.status          := csr.io.status
     decode_units(w).io.csr_decode      <> csr.io.decode(w)
-    decode_units(w).io.interrupt       := RegNext(csr.io.interrupt)
-    decode_units(w).io.interrupt_cause := RegNext(csr.io.interrupt_cause)
+    decode_units(w).io.interrupt       := FixedPipeline.delay(csr.io.interrupt, 1)
+    decode_units(w).io.interrupt_cause := FixedPipeline.delay(csr.io.interrupt_cause, 1)
     decode_units(w).io.fcsr_rm         := csr.io.fcsr_rm
 
     dec_uops(w) := decode_units(w).io.deq.uop
@@ -593,7 +612,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
         read_issued = issue_read || read_issued
       }
       req.ready := read_issued
-      alu_exe_units(i).io_rrd_ftq_resps(w) := Mux(RegNext(data_sel(0)),
+      alu_exe_units(i).io_rrd_ftq_resps(w) := Mux(FixedPipeline.delay(data_sel(0), 1),
         io.ifu.rrd_ftq_resps(1), io.ifu.rrd_ftq_resps(2))
     }
   }
@@ -801,9 +820,12 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   // Minor hack: ecall and breaks need to increment the FTQ deq ptr earlier than commit, since
   // they write their PC into the CSR the cycle before they commit.
   // Since these are also unique, increment the FTQ ptr when they are dispatched
-  when (RegNext(dis_fire.reduce(_||_) && dis_uops.at(PriorityEncoder(dis_fire)).is_sys_pc2epc)) {
+  val dispatched_sys = FixedPipeline(
+    dis_fire.reduce(_||_) && dis_uops.at(PriorityEncoder(dis_fire)).is_sys_pc2epc,
+    dis_uops.at(PriorityEncoder(dis_valids)).ftq_idx, 1, holdPayload = false, resetValid = false)
+  when (dispatched_sys.valid) {
     io.ifu.commit.valid   := True
-    io.ifu.commit.payload := RegNext(dis_uops.at(PriorityEncoder(dis_valids)).ftq_idx).resized
+    io.ifu.commit.payload := dispatched_sys.payload.resized
   }
 
   for (w <- 0 until coreWidth) {
@@ -846,13 +868,14 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   //-------------------------------------------------------------
   // Write immediates, branches into immediate file
   for (w <- 0 until coreWidth) {
-    val uop = RegNext(dis_uops(w))
+    val dispatched = FixedPipeline(dis_fire(w), dis_uops(w), 1, holdPayload = false, resetValid = false)
+    val uop = dispatched.payload
 
-    immregfile.io.write_ports(w).valid        := RegNext(dis_fire(w)) && !uop.imm_sel.isOneOf(IS_N, IS_SH)
+    immregfile.io.write_ports(w).valid        := dispatched.valid && !uop.imm_sel.isOneOf(IS_N, IS_SH)
     immregfile.io.write_ports(w).payload.addr := uop.pimm.resized
     immregfile.io.write_ports(w).payload.data := uop.imm_packed
 
-    bregfile.io.write_ports(w).valid                 := RegNext(dis_fire(w)) && uop.allocate_brtag
+    bregfile.io.write_ports(w).valid                 := dispatched.valid && uop.allocate_brtag
     bregfile.io.write_ports(w).payload.addr          := uop.br_tag.resized
     bregfile.io.write_ports(w).payload.data.ldq_idx  := uop.ldq_idx
     bregfile.io.write_ports(w).payload.data.stq_idx  := uop.stq_idx
@@ -870,13 +893,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   var bypass_idx = 0
   for (i <- 0 until lsuWidth) {
     int_wakeups(wu_idx) := io.lsu.iwakeups(i)
-    connectResp(rob.io.wb_resps(wb_idx), RegNext(UpdateBrMask(brupdate, RegNext(rob.io.flush.valid), io.lsu.iresp(i))))
-    iregfile.io.write_ports(wb_idx).valid        := RegNext(io.lsu.iresp(i).valid)
-    iregfile.io.write_ports(wb_idx).payload.addr := RegNext(io.lsu.iresp(i).payload.uop.pdst)
-    iregfile.io.write_ports(wb_idx).payload.data := RegNext(io.lsu.iresp(i).payload.data)
+    val (raw, killed) = BranchPipeline.writebackTap(io.lsu.iresp(i), brupdate, RegNext(rob.io.flush.valid))
+    connectResp(rob.io.wb_resps(wb_idx), killed)
+    iregfile.io.write_ports(wb_idx).valid        := raw.valid
+    iregfile.io.write_ports(wb_idx).payload.addr := raw.payload.uop.pdst
+    iregfile.io.write_ports(wb_idx).payload.data := raw.payload.data
 
-    int_bypasses(bypass_idx).valid   := RegNext(io.lsu.iresp(i).valid)
-    int_bypasses(bypass_idx).payload := RegNext(io.lsu.iresp(i).payload)
+    int_bypasses(bypass_idx) := raw
     wu_idx += 1
     wb_idx += 1
     bypass_idx += 1
@@ -938,11 +961,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   int_wakeups(wu_idx).payload.bypassable := False
   wu_idx += 1
 
-  rob.io.wb_resps(wb_idx).valid           := RegNext(ll_arb.io.out.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), ll_arb.io.out.payload))
-  rob.io.wb_resps(wb_idx).payload.uop        := RegNext(ll_arb.io.out.payload.uop)
-  rob.io.wb_resps(wb_idx).payload.data       := RegNext(ll_arb.io.out.payload.data).resized
-  rob.io.wb_resps(wb_idx).payload.predicated := RegNext(ll_arb.io.out.payload.predicated)
-  rob.io.wb_resps(wb_idx).payload.fflags     := RegNext(ll_arb.io.out.payload.fflags)
+  val ll_wb = FixedPipeline(
+    ll_arb.io.out.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), ll_arb.io.out.payload),
+    ll_arb.io.out.payload, 1, holdPayload = false, resetValid = false)
+  connectResp(rob.io.wb_resps(wb_idx), ll_wb)
 
   iregfile.io.write_ports(wb_idx).valid        := ll_arb.io.out.valid && ll_arb.io.out.payload.uop.dst_rtype === RT_FIX
   iregfile.io.write_ports(wb_idx).payload.addr := ll_arb.io.out.payload.uop.pdst
@@ -961,8 +983,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     int_wakeups(wu_idx) := fast_wakeup
     wu_idx += 1
 
-    connectResp(rob.io.wb_resps(wb_idx), RegNext(unit.io_alu_resp))
-    rob.io.wb_resps(wb_idx).valid  := RegNext(unit.io_alu_resp.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), unit.io_alu_resp.payload))
+    val alu_wb = FixedPipeline(
+      unit.io_alu_resp.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), unit.io_alu_resp.payload),
+      unit.io_alu_resp.payload, 1, holdPayload = false, resetValid = false)
+    connectResp(rob.io.wb_resps(wb_idx), alu_wb)
 
     iregfile.io.write_ports(wb_idx).valid        := unit.io_alu_resp.valid && unit.io_alu_resp.payload.uop.dst_rtype === RT_FIX
     iregfile.io.write_ports(wb_idx).payload.addr := unit.io_alu_resp.payload.uop.pdst
@@ -1113,15 +1137,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   val countedRetire = (0 until coreWidth).map { w =>
     rob.io.commit.arch_valids(w) && !rob.io.commit.uops(w).is_sys_pc2epc
   }
-  csr.io.retire    := RegNext(PopCount(countedRetire)).resized
-  csr.io.exception := RegNext(rob.io.com_xcpt.valid)
+  val committed_exception = FixedPipeline(rob.io.com_xcpt.valid, rob.io.com_xcpt.payload,
+    1, holdPayload = false, resetValid = false)
+  csr.io.retire    := FixedPipeline.delay(PopCount(countedRetire), 1).resized
+  csr.io.exception := committed_exception.valid
   // csr.io.pc used for setting EPC during exception or CSR.io.trace.
 
   csr.io.pc        := (AlignPCToBoundary(io.ifu.com_pc, icBlockBytes)
-                     + RegNext(rob.io.com_xcpt.payload.pc_lob).resize(vaddrBitsExtended)
-                     - Mux(RegNext(rob.io.com_xcpt.payload.edge_inst), U(2, vaddrBitsExtended bits), U(0, vaddrBitsExtended bits)))
+                     + committed_exception.payload.pc_lob.resize(vaddrBitsExtended)
+                     - Mux(committed_exception.payload.edge_inst, U(2, vaddrBitsExtended bits), U(0, vaddrBitsExtended bits)))
   // Cause not valid for for CALL or BREAKPOINTs (CSRFile will override it).
-  csr.io.cause     := RegNext(rob.io.com_xcpt.payload.cause)
+  csr.io.cause     := committed_exception.payload.cause
 
   val tval_valid = csr.io.exception &&
     csr.io.cause.isOneOf(Seq(
@@ -1149,7 +1175,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     }
 
   csr.io.tval := Mux(tval_valid,
-    RegNext(encodeVirtualAddress(rob.io.com_xcpt.payload.badvaddr, rob.io.com_xcpt.payload.badvaddr)), U(0, vaddrBitsExtended bits))
+    FixedPipeline.delay(encodeVirtualAddress(rob.io.com_xcpt.payload.badvaddr, rob.io.com_xcpt.payload.badvaddr), 1), U(0, vaddrBitsExtended bits))
 
   // reading requires serializing the entire pipeline
   csr.io.fcsr_flags.valid   := rob.io.commit.fflags.valid

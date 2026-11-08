@@ -22,6 +22,7 @@ import scala.collection.mutable.ArrayBuffer
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.{Builder, Link, Node, Payload, StageLink}
 import rocketchip.rocket.{SFenceReq, CSR}
 import rocketchip.rocket.constants.MemoryOpConstants
 import rocketchip.config.Parameters
@@ -90,28 +91,38 @@ abstract class ExecutionUnit(name: String)(implicit p: Parameters) extends BoomM
 
   val io_iss_uop = slave(Flow(new MicroOp))
 
-  val arb_uop = Reg(Flow(new MicroOp))
-  arb_uop.valid   := io_iss_uop.valid && !IsKilledByBranch(io_brupdate, io_kill, io_iss_uop.payload)
-  arb_uop.payload := UpdateBrMask(io_brupdate, io_iss_uop.payload)
-  val rrd_uop = Reg(Flow(new MicroOp))
-  rrd_uop.valid   := arb_uop.valid && !IsKilledByBranch(io_brupdate, io_kill, arb_uop.payload)
-  rrd_uop.payload := UpdateBrMask(io_brupdate, arb_uop.payload)
-  val exe_uop = Reg(Flow(new MicroOp))
-  exe_uop.valid   := rrd_uop.valid && !IsKilledByBranch(io_brupdate, io_kill, rrd_uop.payload)
-  exe_uop.payload := UpdateBrMask(io_brupdate, rrd_uop.payload)
+  val UOP = Payload(new MicroOp)
+  val iss, issKilled, arbUp, arbDown, rrdUp, rrdDown, exe = Node()
+  iss.valid := io_iss_uop.valid
+  iss(UOP) := io_iss_uop.payload
+  val issCtrl = BranchPipeline.uopBoundary(iss, issKilled, UOP, io_brupdate, io_kill)
+  val arbLink = new HoldStageLink(issKilled, arbUp, resetValid = false)
+  val arbCtrl = BranchPipeline.uopBoundary(arbUp, arbDown, UOP, io_brupdate, io_kill)
+  val rrdLink = StageLink(arbDown, rrdUp)
+  val rrdCtrl = BranchPipeline.uopBoundary(rrdUp, rrdDown, UOP, io_brupdate, io_kill)
+  val exeLink = StageLink(rrdDown, exe)
+  val pipeLinks = ArrayBuffer[Link](issCtrl, arbLink, arbCtrl, rrdLink, rrdCtrl, exeLink)
 
-  /** The squash/rebusy replay shared by every execution unit. */
+  // Traits add operand payloads and replay controls after this base constructor.
+  afterElaboration {
+    Builder(pipeLinks)
+    Seq(rrdUp, exe).foreach(_.valid.removeInitAssignments())
+  }
+
+  // Register-output views used by the functional units and their existing taps.
+  val arb_uop = arbUp.toFlow(_(UOP))
+  val rrd_uop = rrdUp.toFlow(_(UOP))
+  val exe_uop = exe.toFlow(_(UOP))
+
+  /** Replay holds ARB, rewrites its mask/hints and inserts a bubble in RRD. */
   def replayArb(cond: Bool, rebusied: Bool, clearP3: Boolean): Unit = {
-    when (cond || rebusied) {
-      val will_replay = arb_uop.valid && !IsKilledByBranch(io_brupdate, io_kill, arb_uop.payload) && !rebusied
-      arb_uop.valid   := will_replay
-      arb_uop.payload := UpdateBrMask(io_brupdate, arb_uop.payload)
-      arb_uop.payload.iw_p1_bypass_hint := False
-      arb_uop.payload.iw_p2_bypass_hint := False
-      if (clearP3) arb_uop.payload.iw_p3_bypass_hint := False
-
-      rrd_uop.valid := False
-    }
+    arbCtrl.haltWhen(cond || rebusied)
+    arbLink.drainWhen(IsKilledByBranch(io_brupdate, io_kill, arbUp(UOP)) || rebusied)
+    val held = arbLink.hold(UOP)
+    held := UpdateBrMask(io_brupdate, arbUp(UOP))
+    held.iw_p1_bypass_hint := False
+    held.iw_p2_bypass_hint := False
+    if (clearP3) held.iw_p3_bypass_hint := False
   }
 }
 
@@ -143,18 +154,19 @@ trait HasIrfReadPorts extends ExecutionUnit {
   val arb_rebusied_prs2 = arb_uop.payload.lrs2_rtype === RT_FIX && rebusied(arb_uop.payload.prs2) && Bool(nReaders == 2)
   val arb_rebusied      = arb_rebusied_prs1 || arb_rebusied_prs2
 
-  val exe_rs1_data = Reg(UInt(xLen bits))
-  val exe_rs2_data = Reg(UInt(xLen bits))
+  val RS1, RS2 = Payload(UInt(xLen bits))
+  val exe_rs1_data = exe(RS1)
+  val exe_rs2_data = exe(RS2)
   val (rs1_hit, rs1_data) = rrd_bypass_hit(rrd_uop.payload.prs1, io_rrd_irf_resps(0))
   assert(!(rrd_uop.valid && rrd_uop.payload.lrs1_rtype === RT_FIX && rrd_uop.payload.iw_p1_bypass_hint && !rs1_hit))
-  exe_rs1_data := Mux(rrd_uop.payload.lrs1_rtype === RT_ZERO, U(0, xLen bits), rs1_data)
+  rrdDown(RS1) := Mux(rrd_uop.payload.lrs1_rtype === RT_ZERO, U(0, xLen bits), rs1_data)
 
   if (nReaders == 2) {
     val (rs2_hit, rs2_data) = rrd_bypass_hit(rrd_uop.payload.prs2, io_rrd_irf_resps(1))
     assert(!(rrd_uop.valid && rrd_uop.payload.lrs2_rtype === RT_FIX && rrd_uop.payload.iw_p2_bypass_hint && !rs2_hit))
-    exe_rs2_data := Mux(rrd_uop.payload.lrs2_rtype === RT_ZERO, U(0, xLen bits), rs2_data)
+    rrdDown(RS2) := Mux(rrd_uop.payload.lrs2_rtype === RT_ZERO, U(0, xLen bits), rs2_data)
   } else {
-    exe_rs2_data.assignDontCare()
+    rrdDown(RS2).assignDontCare()
   }
 
   // Spinal port: operand values for the RVFI trace (see rvfi.scala).
@@ -193,10 +205,12 @@ trait HasImmrfReadPort extends ExecutionUnit {
   io_rrd_immrf_wakeup.payload.bypassable := False
   io_rrd_immrf_wakeup.payload.uop := rrd_uop.payload
 
-  val exe_imm_data = RegNext(Mux(rrd_uop.payload.imm_sel === IS_SH,
+  val IMM = Payload(UInt(xLen bits))
+  val exe_imm_data = exe(IMM)
+  rrdDown(IMM) := Mux(rrd_uop.payload.imm_sel === IS_SH,
     Sext(rrd_uop.payload.pimm, xLen),
     Sext(ImmGen(io_rrd_immrf_resp, rrd_uop.payload.imm_sel), xLen)
-  ))
+  )
 }
 
 trait HasPrfReadPort extends ExecutionUnit {
@@ -207,8 +221,9 @@ trait HasPrfReadPort extends ExecutionUnit {
   io_arb_prf_req.valid   := arb_uop.valid
   io_arb_prf_req.payload := arb_uop.payload.ppred
 
-  val exe_pred_data = Reg(Bool())
-  exe_pred_data := io_rrd_prf_resp
+  val PRED = Payload(Bool())
+  val exe_pred_data = exe(PRED)
+  rrdDown(PRED) := io_rrd_prf_resp
 }
 
 trait HasBrfReadPort extends ExecutionUnit {
@@ -219,9 +234,9 @@ trait HasBrfReadPort extends ExecutionUnit {
   io_arb_brf_req.valid   := (arb_uop.valid && arb_uop.payload.is_br)
   io_arb_brf_req.payload := arb_uop.payload.br_tag
 
-  exe_uop.payload.ldq_idx   := io_rrd_brf_resp.ldq_idx
-  exe_uop.payload.stq_idx   := io_rrd_brf_resp.stq_idx
-  exe_uop.payload.rxq_idx   := io_rrd_brf_resp.rxq_idx
+  rrdCtrl.bypass(UOP).ldq_idx   := io_rrd_brf_resp.ldq_idx
+  rrdCtrl.bypass(UOP).stq_idx   := io_rrd_brf_resp.stq_idx
+  rrdCtrl.bypass(UOP).rxq_idx   := io_rrd_brf_resp.rxq_idx
 }
 
 trait HasFrfReadPorts extends ExecutionUnit {
@@ -241,21 +256,22 @@ trait HasFrfReadPorts extends ExecutionUnit {
   io_arb_frf_reqs(2).valid   := arb_uop.valid && arb_uop.payload.frs3_en && !arb_uop.payload.iw_p3_bypass_hint
   io_arb_frf_reqs(2).payload := arb_uop.payload.prs3
 
-  val exe_rs1_data = Reg(UInt(fLen+1 bits))
-  val exe_rs2_data = Reg(UInt(fLen+1 bits))
-  val exe_rs3_data = Reg(UInt(fLen+1 bits))
+  val RS1, RS2, RS3 = Payload(UInt(fLen+1 bits))
+  val exe_rs1_data = exe(RS1)
+  val exe_rs2_data = exe(RS2)
+  val exe_rs3_data = exe(RS3)
 
   val (rs1_hit, rs1_data) = rrd_bypass_hit(rrd_uop.payload.prs1, io_rrd_frf_resps(0))
   assert(!(rrd_uop.valid && rrd_uop.payload.lrs1_rtype === RT_FLT && rrd_uop.payload.iw_p1_bypass_hint && !rs1_hit))
-  exe_rs1_data := rs1_data
+  rrdDown(RS1) := rs1_data
 
   val (rs2_hit, rs2_data) = rrd_bypass_hit(rrd_uop.payload.prs2, io_rrd_frf_resps(1))
   assert(!(rrd_uop.valid && rrd_uop.payload.lrs2_rtype === RT_FLT && rrd_uop.payload.iw_p2_bypass_hint && !rs2_hit))
-  exe_rs2_data := rs2_data
+  rrdDown(RS2) := rs2_data
 
   val (rs3_hit, rs3_data) = rrd_bypass_hit(rrd_uop.payload.prs3, io_rrd_frf_resps(2))
   assert(!(rrd_uop.valid && rrd_uop.payload.iw_p3_bypass_hint && !rs3_hit))
-  exe_rs3_data := rs3_data
+  rrdDown(RS3) := rs3_data
 }
 
 trait HasFtqReadPort extends ExecutionUnit {
@@ -270,8 +286,9 @@ trait HasFtqReadPort extends ExecutionUnit {
   io_arb_ftq_reqs(1).valid   := arb_uop.valid && (arb_uop.payload.br_type === B_JR || arb_uop.payload.is_sfb_br)
   io_arb_ftq_reqs(1).payload := WrapInc(arb_uop.payload.ftq_idx, ftqSz)
 
-  val exe_ftq_data = Reg(Vec.fill(2)(new FTQInfo))
-  exe_ftq_data := io_rrd_ftq_resps
+  val FTQ = Payload(Vec.fill(2)(new FTQInfo))
+  val exe_ftq_data = exe(FTQ)
+  rrdDown(FTQ) := io_rrd_ftq_resps
 }
 
 class MemExeUnit(
@@ -304,16 +321,14 @@ class MemExeUnit(
 
     val agen = master(Flow(new MemGen)).setName("io_agen")
     if (enableAgenStage) {
-      val agen_reg = Reg(Flow(new MemGen))
-      agen_reg.valid    := (
+      val agenInput = new MemGen
+      agenInput.uop  := UpdateBrMask(io_brupdate, exe_uop.payload)
+      agenInput.data := Sext(effective_address, xLen)
+      agen << FixedPipeline(
         exe_uop.valid &&
         exe_uop.payload.fu_code(FC_AGEN) &&
-        !IsKilledByBranch(io_brupdate, io_kill, exe_uop.payload)
-      )
-      agen_reg.payload.uop  := UpdateBrMask(io_brupdate, exe_uop.payload)
-      agen_reg.payload.data := Sext(effective_address, xLen)
-
-      agen := agen_reg
+        !IsKilledByBranch(io_brupdate, io_kill, exe_uop.payload),
+        agenInput, 1, holdPayload = false, resetValid = false)
     } else {
       agen.valid        := exe_uop.valid && exe_uop.payload.fu_code(FC_AGEN)
       agen.payload.uop  := exe_uop.payload
@@ -396,20 +411,24 @@ class UniqueExeUnit(
     alu.io.brupdate    := io_brupdate
     alu.io.kill        := io_kill
 
+    val csrInput = new CSRResp
+    csrInput.uop  := alu.io.resp.payload.uop
+    csrInput.data := alu.io.resp.payload.data
+    csrInput.addr := exe_imm_data.resized
     val c = master(Flow(new CSRResp)).setName("io_csr_resp")
-    c.valid        := RegNext(alu.io.resp.valid && exe_uop.payload.csr_cmd =/= CSR.N)
-    c.payload.uop  := RegNext(alu.io.resp.payload.uop)
-    c.payload.data := RegNext(alu.io.resp.payload.data)
-    c.payload.addr := RegNext(exe_imm_data).resized
+    c << FixedPipeline(alu.io.resp.valid && exe_uop.payload.csr_cmd =/= CSR.N,
+      csrInput, 1, holdPayload = false, resetValid = false)
 
+    val sfenceInput = new SFenceReq
+    sfenceInput.rs1  := exe_uop.payload.pimm(0)
+    sfenceInput.rs2  := exe_uop.payload.pimm(1)
+    sfenceInput.addr := exe_rs1_data.resized
+    sfenceInput.asid := exe_rs2_data.resized
+    sfenceInput.hv   := exe_uop.payload.mem_cmd === M_HFENCEV
+    sfenceInput.hg   := exe_uop.payload.mem_cmd === M_HFENCEG
     val s = master(Flow(new SFenceReq)).setName("io_sfence")
-    s.valid        := RegNext(exe_uop.valid && exe_uop.payload.is_sfence)
-    s.payload.rs1  := RegNext(exe_uop.payload.pimm(0))
-    s.payload.rs2  := RegNext(exe_uop.payload.pimm(1))
-    s.payload.addr := RegNext(exe_rs1_data).resized
-    s.payload.asid := RegNext(exe_rs2_data).resized
-    s.payload.hv   := RegNext(exe_uop.payload.mem_cmd === M_HFENCEV)
-    s.payload.hg   := RegNext(exe_uop.payload.mem_cmd === M_HFENCEG)
+    s << FixedPipeline(exe_uop.valid && exe_uop.payload.is_sfence,
+      sfenceInput, 1, holdPayload = false, resetValid = false)
 
     (Some(c), Some(s))
   } else {
@@ -610,8 +629,23 @@ class FPExeUnit(val hasFDiv: Boolean = false, val hasFpiu: Boolean = false)(impl
   fast_wakeups(0).payload.speculative_mask := 0
   fast_wakeups(0).payload.rebusy           := False
   fast_wakeups(0).payload.bypassable       := True
-  for (i <- 0 until fastWakeupLatency) {
-    fast_wakeups(i+1) := RegNext(UpdateBrMask(io_brupdate, io_kill, fast_wakeups(i)))
+  val wakeupNodes = Vector.fill(fastWakeupLatency + 1)(Node())
+  val wakeupPayload = wakeupNodes.head.insert(fast_wakeups(0).payload)
+  wakeupNodes.head.valid := fast_wakeups(0).valid
+  val wakeupLinks = (0 until fastWakeupLatency).flatMap { i =>
+    val boundary = Node()
+    Vector(BranchPipeline.boundary(wakeupNodes(i), boundary, wakeupPayload, io_brupdate, io_kill),
+      StageLink(boundary, wakeupNodes(i + 1)))
+  }
+  for (i <- 1 to fastWakeupLatency) {
+    fast_wakeups(i).valid := wakeupNodes(i).isValid
+    fast_wakeups(i).payload := wakeupNodes(i)(wakeupPayload)
+  }
+  if (wakeupLinks.nonEmpty) {
+    Builder(wakeupLinks)
+    wakeupNodes.tail.foreach(_.valid.removeInitAssignments())
+  } else {
+    wakeupNodes.head.build()
   }
   io_wakeup := fast_wakeups(fastWakeupLatency)
 
@@ -669,10 +703,13 @@ class FPExeUnit(val hasFDiv: Boolean = false, val hasFpiu: Boolean = false)(impl
     fpiu_resp.payload.predicated := queue.io.deq.payload.predicated
     fpiu_resp.payload.fflags     := queue.io.deq.payload.fflags
 
+    val dgenInput = new MemGen
+    dgenInput.uop := exe_uop.payload
+    dgenInput.data := ieee(exe_rs2_data).resized
     val dgen = master(Flow(new MemGen)).setName("io_dgen")
-    dgen.valid        := RegNext(exe_uop.valid && exe_uop.payload.uses_stq && !IsKilledByBranch(io_brupdate, io_kill, exe_uop.payload))
-    dgen.payload.uop  := RegNext(exe_uop.payload)
-    dgen.payload.data := RegNext(ieee(exe_rs2_data)).resized
+    dgen << FixedPipeline(exe_uop.valid && exe_uop.payload.uses_stq &&
+      !IsKilledByBranch(io_brupdate, io_kill, exe_uop.payload),
+      dgenInput, 1, holdPayload = false, resetValid = false)
     (Some(fpiu_resp), Some(dgen))
   } else {
     assert(!(exe_uop.valid && exe_uop.payload.fu_code(FC_F2I)))

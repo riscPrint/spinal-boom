@@ -13,6 +13,7 @@ package boom.ifu
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.{Builder, CtrlLink, Node, StageLink}
 import spinal.lib.bus.tilelink
 import spinal.lib.bus.tilelink.{Opcode, M2sTransfers, SizeRange}
 import rocketchip.config.Parameters
@@ -85,11 +86,18 @@ class ICache(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(implicit p
   val s0_valid = io.req.fire
   val s0_vaddr = io.req.payload.addr
 
-  val s1_valid = RegNext(s0_valid) init False
+  val c0, c1, c1Out, c2 = Node()
+  val c01 = StageLink(c0, c1)
+  val c1c = CtrlLink(c1, c1Out)
+  val c12 = StageLink(c1Out, c2)
+  c0.valid := s0_valid
+  c1c.terminateWhen(io.s1_kill)
+
+  val s1_valid = c1.isValid
   val s1_tag_hit = Vec.fill(nWays)(Bool())
   val s1_hit = s1_tag_hit.reduce(_||_)
-  val s2_valid = RegNext(s1_valid && !io.s1_kill) init False
-  val s2_hit = RegNext(s1_hit)
+  val s2_valid = c2.isValid
+  val s2_hit = c2(c1.insert(s1_hit))
 
   val invalidated = Reg(Bool())
   val refill_valid = Reg(Bool()) init False
@@ -184,7 +192,8 @@ class ICache(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(implicit p
     def b1Row(addr: UInt) =
       addr(untagBits-1 downto blockOffBits-log2Ceil(refillCycles))
 
-    s1_bankid := RegNext(bank(s0_vaddr)).lsb
+    val BANK = c0.insert(bank(s0_vaddr))
+    s1_bankid := c1(BANK).lsb
 
     val s0_ren = s0_valid
     val wen = (refill_one_beat && !invalidated)
@@ -224,9 +233,9 @@ class ICache(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(implicit p
       s2_dout(w) := Cat(rdata_1(w), rdata_0(w)).asUInt
     }
   }
-  val s2_tag_hit = RegNext(s1_tag_hit)
+  val s2_tag_hit = c2(c1.insert(s1_tag_hit))
   val s2_hit_way = OHToUInt(s2_tag_hit)
-  val s2_bankid = RegNext(s1_bankid)
+  val s2_bankid = c2(c1.insert(s1_bankid))
   val s2_way_mux = Mux1H(s2_tag_hit, s2_dout)
 
   val s2_unbanked_data = s2_way_mux
@@ -265,6 +274,8 @@ class ICache(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(implicit p
   when (!refill_valid) { invalidated := False }
   when (refill_fire) { refill_valid := True }
   when (refill_done) { refill_valid := False }
+
+  Builder(c01, c1c, c12)
 
   override def toString: String = BoomCoreStringPrefix(
     "==L1-ICache==",

@@ -47,15 +47,17 @@ class BIMBranchPredictorBank(params: BoomBIMParams = BoomBIMParams())(implicit p
   val mems = (0 until nCols) map {c => (f"bim_col$c", nSetsPerCol, bankWidth * 2)}
 
   val s0_col_mask = UIntToOH(s0_idx(log2Ceil(nCols)-1 downto 0), nCols) & Fill(nCols, s0_valid)
-  val s1_col_mask = RegNext(s0_col_mask)
+  val COL_MASK = pred(0).insert(s0_col_mask)
+  val s1_col_mask = pred(1)(COL_MASK)
   val s0_col_idx  = s0_idx >> log2Ceil(nCols)
-  val s1_col_idx  = RegNext(s0_col_idx)
+  val s1_col_idx  = predAt(s0_col_idx, 0, 1)
 
   val s2_req_rdata_all = Vec.fill(nCols)(Vec.fill(bankWidth)(UInt(2 bits)))
-  val s2_req_rdata = Mux1H(RegNext(s1_col_mask), s2_req_rdata_all)
+  val s2_req_rdata = Mux1H(pred(2)(COL_MASK), s2_req_rdata_all)
 
   val s2_resp         = Vec.fill(bankWidth)(Bool())
 
+  val s3_resp = predAt(s2_resp, 2, 3)
   for (w <- 0 until bankWidth) {
 
     s2_resp(w)        := s2_valid && s2_req_rdata(w)(1) && !doing_reset
@@ -64,9 +66,9 @@ class BIMBranchPredictorBank(params: BoomBIMParams = BoomBIMParams())(implicit p
     if (!params.slow) {
       io.resp.f2(w).taken := s2_resp(w)
     }
-    io.resp.f3(w).taken := RegNext(s2_resp(w))
+    io.resp.f3(w).taken := s3_resp(w)
   }
-  io.f3_meta := RegNext(s2_meta.asBits.asUInt).resized
+  io.f3_meta := predAt(s2_meta.asBits.asUInt, 2, 3).resized
 
   val s1_update_wdata   = Vec.fill(bankWidth)(UInt(2 bits))
   val s1_update_wmask   = Vec.fill(bankWidth)(Bool())

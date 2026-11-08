@@ -2,6 +2,7 @@ package boom.ifu
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.{Builder, Node, StageLink}
 import rocketchip.config.Parameters
 import rocketchip.util._
 
@@ -54,11 +55,14 @@ class LoopBranchPredictorColumn(nSets: Int, tagSz: Int, idxW: Int) extends Compo
   } elsewhen (io.update_mispredict && io.update_idx === io.f2_req_idx) {
     f2_entry.s_cnt := 0
   }
-  val f3_entry = RegNext(f2_entry)
-  val f3_scnt  = Mux(io.update_repair && io.update_idx === RegNext(io.f2_req_idx),
+  val ages = Vector.fill(3)(Node()) // f2, f3, f4; no valid or ready control
+  val ENTRY = ages(0).insert(f2_entry)
+  val IDX = ages(0).insert(io.f2_req_idx)
+  val f3_entry = ages(1)(ENTRY)
+  val f3_scnt  = Mux(io.update_repair && io.update_idx === ages(1)(IDX),
     io.update_meta.s_cnt,
     f3_entry.s_cnt)
-  val f3_tag   = RegNext(io.f2_req_idx(tagSz+log2Ceil(nSets)-1 downto log2Ceil(nSets)))
+  val f3_tag   = ages(1)(IDX)(tagSz+log2Ceil(nSets)-1 downto log2Ceil(nSets))
 
   io.f3_pred := io.f3_pred_in
   io.f3_meta.s_cnt := f3_scnt
@@ -69,11 +73,13 @@ class LoopBranchPredictorColumn(nSets: Int, tagSz: Int, idxW: Int) extends Compo
     }
   }
 
-  val f4_fire  = RegNext(io.f3_req_fire)
-  val f4_entry = RegNext(f3_entry)
-  val f4_tag   = RegNext(f3_tag)
-  val f4_scnt  = RegNext(f3_scnt)
-  val f4_idx   = RegNext(RegNext(io.f2_req_idx))
+  val FIRE = ages(1).insert(io.f3_req_fire)
+  val SCNT = ages(1).insert(f3_scnt)
+  val f4_fire  = ages(2)(FIRE)
+  val f4_entry = ages(2)(ENTRY)
+  val f4_tag   = ages(2)(IDX)(tagSz+log2Ceil(nSets)-1 downto log2Ceil(nSets))
+  val f4_scnt  = ages(2)(SCNT)
+  val f4_idx   = ages(2)(IDX)
 
   when (f4_fire) {
     when (f4_entry.tag === f4_tag) {
@@ -158,6 +164,7 @@ class LoopBranchPredictorColumn(nSets: Int, tagSz: Int, idxW: Int) extends Compo
   when (doing_reset) {
     entries.write(reset_idx)(_ := LoopEntry(tagSz).getZero)
   }
+  Builder(StageLink(ages(0), ages(1)), StageLink(ages(1), ages(2)))
 }
 
 class LoopBranchPredictorBank(implicit p: Parameters) extends BranchPredictorBank()(p)
@@ -176,7 +183,7 @@ class LoopBranchPredictorBank(implicit p: Parameters) extends BranchPredictorBan
     columns(w).io.f2_req_valid := s2_valid
     columns(w).io.f2_req_idx  := s2_idx
     columns(w).io.f3_req_fire := (s3_valid && s3_mask(w) && io.f3_fire &&
-      RegNext(io.resp_in(0).f2(w).predicted_pc.valid && io.resp_in(0).f2(w).is_br))
+      predAt(io.resp_in(0).f2(w).predicted_pc.valid && io.resp_in(0).f2(w).is_br, 2, 3))
 
     columns(w).io.f3_pred_in  := io.resp_in(0).f3(w).taken
     io.resp.f3(w).taken       := columns(w).io.f3_pred

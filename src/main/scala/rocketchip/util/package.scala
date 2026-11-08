@@ -98,10 +98,6 @@ package object util {
     }
   }
 
-  implicit class DataAugment[T <: Data](private val x: T) extends AnyVal {
-    def holdUnless(enable: Bool): T = Mux(enable, x, RegNextWhen(x, enable))
-  }
-
   implicit class MemAugment[T <: Data](private val m: Mem[T]) extends AnyVal {
     /**
      * Chisel `SyncReadMem.read(addr, en)` as firtool / chipyard simulate it: the
@@ -110,12 +106,6 @@ package object util {
      * Spinal's readSync would return the old data instead.
      */
     def readSyncChisel(addr: UInt, enable: Bool = True): T = m.readAsync(RegNextWhen(addr.resize(m.addressWidth), enable))
-
-    /** SyncReadMem.read(addr, en) holdUnless RegNext(en) */
-    def readAndHold(addr: UInt, enable: Bool): T = {
-      val d = readSyncChisel(addr, enable)
-      Mux(RegNext(enable) init False, d, RegNextWhen(d, RegNext(enable) init False))
-    }
   }
 
   // Concatenation conventions used throughout this port:
@@ -192,10 +182,6 @@ package object util {
   /** Chisel MuxCase: first true condition wins. */
   def MuxCase[T <: Data](default: T, mapping: Seq[(Bool, T)]): T =
     mapping.foldRight(default) { case ((c, v), acc) => Mux(c, v, acc) }
-
-  /** Chisel ShiftRegister with an enable (no reset). */
-  def ShiftRegister[T <: Data](in: T, n: Int, en: Bool = True): T =
-    if (n == 0) in else { val r = RegNextWhen(in, en); ShiftRegister(r, n - 1, en) }
 
   /** Constant hardware literal for a Scala BigInt. */
   def lit(v: BigInt, w: Int): UInt = U(v, w bits)

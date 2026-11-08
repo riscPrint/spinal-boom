@@ -383,8 +383,10 @@ class HellaCacheArbiter(n: Int)(implicit p: Parameters) extends Component {
     io.mem <> io.requestor.head
   } else {
     val idW = log2UpChisel(n)
-    val s1_id = Reg(UInt(idW bits))
-    val s2_id = RegNext(s1_id)
+    // Requester ID: priority-selected at s0, then two unconditional data stages.
+    val s0_id = UInt(idW bits)
+    val s1_id = FixedPipeline.delay(s0_id, 1)
+    val s2_id = FixedPipeline.delay(s1_id, 1)
 
     io.mem.keep_clock_enabled := io.requestor.map(_.keep_clock_enabled).reduce(_ || _)
 
@@ -398,7 +400,7 @@ class HellaCacheArbiter(n: Int)(implicit p: Parameters) extends Component {
       def connect_s0() = {
         io.mem.req.payload := req.payload
         io.mem.req.payload.tag := Cat(req.payload.tag, U(i, idW bits)).asUInt.resized
-        s1_id := i
+        s0_id := U(i, idW bits)
       }
       def connect_s1() = {
         io.mem.s1_kill := io.requestor(i).s1_kill

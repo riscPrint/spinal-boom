@@ -318,7 +318,7 @@ class SetAssocLRU(n_sets: Int, n_ways: Int, policy: String) {
     require(sets.size == touch_ways.size, "internal consistency check: should be same number of simultaneous updates for sets and touch_ways")
     for (set <- 0 until n_sets) {
       val set_touch_ways = (sets zip touch_ways).map { case (touch_set, touch_way) =>
-        Pipe(touch_way.valid && (touch_set === set), touch_way.payload, 0)
+        FixedPipeline(touch_way.valid && (touch_set === set), touch_way.payload, 0)
       }
       when(set_touch_ways.map(_.valid).orR) {
         state_vec(set) := logic.get_next_state(state_vec(set), set_touch_ways)

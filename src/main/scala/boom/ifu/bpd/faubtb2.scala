@@ -74,10 +74,10 @@ class FA2MicroBTBBranchPredictorBank(params: BoomFA2MicroBTBParams = BoomFA2Micr
     io.resp.f1(w).is_jal       := s1_is_jal(w)
     io.resp.f1(w).taken        := s1_taken(w)
 
-    io.resp.f2(w) := RegNext(io.resp.f1(w))
-    io.resp.f3(w) := RegNext(io.resp.f2(w))
+    io.resp.f2(w) := predAt(io.resp.f1(w), 1, 2)
+    io.resp.f3(w) := predAt(io.resp.f2(w), 2, 3)
   }
-  io.f3_meta := RegNext(RegNext(s1_meta.asBits.asUInt)).resized
+  io.f3_meta := predAt(s1_meta.asBits.asUInt, 1, 3).resized
 
   val s1_update_hit_oh = (0 until nWays) map { w =>
     meta(w).tag === s1_update_idx(tagSz-1 downto 0) && valids(w)

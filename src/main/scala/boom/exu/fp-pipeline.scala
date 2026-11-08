@@ -169,11 +169,14 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
   )
 
   // Hookup load writeback -- and recode FP values.
-  ll_wbarb.io.in(0).valid := RegNext(io.ll_wports(0).valid &&
-    !IsKilledByBranch(io.brupdate, io.flush_pipeline, io.ll_wports(0).payload))
-  ll_wbarb.io.in(0).payload  := RegNext(UpdateBrMask(io.brupdate, io.ll_wports(0).payload))
-  ll_wbarb.io.in(0).payload.data := recode(RegNext(io.ll_wports(0).payload.data),
-                                        RegNext(io.ll_wports(0).payload.uop.mem_size =/= 2).asUInt)
+  val loadResponses = (0 until lsuWidth).map { i =>
+    BranchPipeline.writebackTap(io.ll_wports(i), io.brupdate, io.flush_pipeline)
+  }
+  val load0 = loadResponses.head._2
+  ll_wbarb.io.in(0).valid := load0.valid
+  ll_wbarb.io.in(0).payload := load0.payload
+  ll_wbarb.io.in(0).payload.data := recode(load0.payload.data,
+    (load0.payload.uop.mem_size =/= 2).asUInt)
 
   val ifpu_resp = io.from_int
   ll_wbarb.io.in(1) << ifpu_resp
@@ -192,10 +195,11 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
 
   var w_cnt = 1
   for (i <- 1 until lsuWidth) {
-    fregfile.io.write_ports(w_cnt).valid        := RegNext(io.ll_wports(i).valid)
-    fregfile.io.write_ports(w_cnt).payload.addr := RegNext(io.ll_wports(i).payload.uop.pdst)
-    fregfile.io.write_ports(w_cnt).payload.data := recode(RegNext(io.ll_wports(i).payload.data),
-                                                       RegNext(io.ll_wports(i).payload.uop.mem_size =/= 2).asUInt)
+    val raw = loadResponses(i)._1
+    fregfile.io.write_ports(w_cnt).valid        := raw.valid
+    fregfile.io.write_ports(w_cnt).payload.addr := raw.payload.uop.pdst
+    fregfile.io.write_ports(w_cnt).payload.data := recode(raw.payload.data,
+      (raw.payload.uop.mem_size =/= 2).asUInt)
     w_cnt += 1
   }
   for (eu <- exe_units) {
@@ -240,7 +244,7 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
   idx += 1
 
   for (i <- 1 until lsuWidth) {
-    val wb = RegNext(UpdateBrMask(io.brupdate, io.flush_pipeline, io.ll_wports(i)))
+    val (raw, wb) = loadResponses(i)
     fp_wakeups(idx).valid := wb.valid && wb.payload.uop.dst_rtype === RT_FLT
     fp_wakeups(idx).payload.uop := wb.payload.uop
     fp_wakeups(idx).payload.speculative_mask := 0
@@ -249,8 +253,8 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
 
     io.wb(idx) := wb
     io.wb(idx).payload.data := recode(
-      RegNext(io.ll_wports(i).payload.data),
-      RegNext(io.ll_wports(i).payload.uop.mem_size =/= 2).asUInt
+      raw.payload.data,
+      (raw.payload.uop.mem_size =/= 2).asUInt
     )
     idx += 1
   }

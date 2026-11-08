@@ -33,6 +33,7 @@ class KonataTracer(p: KonataProbe, out: java.io.File, disasm: Map[BigInt, (Long,
   private var written = 0L     // cycle of the log's cursor
   private var nextId = 0L
   private var retired = 0L
+  private var closed = false
   /** Events for this cycle and the next (stage changes decided now take effect next cycle). */
   private var now = new mutable.ArrayBuffer[String]
   private var next = new mutable.ArrayBuffer[String]
@@ -159,12 +160,16 @@ class KonataTracer(p: KonataProbe, out: java.io.File, disasm: Map[BigInt, (Long,
     cycle += 1
   }
 
-  def close(): Unit = {
+  def close(): Unit = if (!closed) {
+    closed = true
     if (now.nonEmpty) {
       if (cycle != written) w.print(s"C\t${cycle - written}\n")
       now.foreach(l => w.print(l + "\n"))
     }
+    w.flush()
+    val error = w.checkError()
     w.close()
+    require(!error, s"error writing Konata log to $out")
   }
 }
 

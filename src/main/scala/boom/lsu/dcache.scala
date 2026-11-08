@@ -8,6 +8,7 @@ package boom.lsu
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline._
 import spinal.lib.bus.tilelink
 import spinal.lib.bus.tilelink.{ChannelA, ChannelB, ChannelC, ChannelD, ChannelE, M2sTransfers, SizeRange}
 
@@ -65,11 +66,15 @@ class BoomWritebackUnit(implicit p: Parameters) extends L1HellaCacheModule()(p) 
   val s_active      = U(3, 3 bits)
   val s_grant       = U(4, 3 bits)
   val state = Reg(UInt(3 bits)) init s_invalid
-  val r1_data_req_fired = Reg(Bool()) init False
-  val r2_data_req_fired = Reg(Bool()) init False
-  val r1_data_req_cnt = Reg(UInt(log2UpChisel(refillCycles+1) bits))
-  val r2_data_req_cnt = Reg(UInt(log2UpChisel(refillCycles+1) bits))
   val data_req_cnt = Reg(UInt(log2UpChisel(refillCycles+1) bits)) init 0
+  // Read tags: two stages that advance only while filling the buffer. The
+  // fired valid resets to false; the first stage clears its count on no request.
+  val filling = state === s_fill_buffer
+  val data_req_fired = io.data_req.fire && io.meta_read.fire
+  val r2_data_req = GatedPipeline.flow(data_req_fired,
+    Mux(data_req_fired, data_req_cnt, U(0, data_req_cnt.getWidth bits)), filling, 2)
+  val r2_data_req_fired = r2_data_req.valid
+  val r2_data_req_cnt = r2_data_req.payload
   val (_, last_beat, all_beats_done, beat_count) = edge.count(io.release)
   val wb_buffer = Reg(Vec.fill(refillCycles)(UInt(encRowBits bits)))
   val acked = Reg(Bool()) init False
@@ -122,13 +127,7 @@ class BoomWritebackUnit(implicit p: Parameters) extends L1HellaCacheModule()(p) 
                               Cat(req.idx, data_req_cnt(log2UpChisel(refillCycles)-1 downto 0)).asUInt
                             else req.idx) << rowOffBits).resized
 
-    r1_data_req_fired := False
-    r1_data_req_cnt   := 0
-    r2_data_req_fired := r1_data_req_fired
-    r2_data_req_cnt   := r1_data_req_cnt
-    when (io.data_req.fire && io.meta_read.fire) {
-      r1_data_req_fired := True
-      r1_data_req_cnt   := data_req_cnt
+    when (data_req_fired) {
       data_req_cnt := data_req_cnt + 1
     }
     when (r2_data_req_fired) {
@@ -355,28 +354,36 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
 
   //----------------------------------------------------------------------------------------------------
 
-  val s1_rbanks         = RegNext(s0_rbanks)
-  val s1_ridxs          = RegNext(s0_ridxs)
-  val s1_read_valids    = RegNext(s0_read_valids)
+  val b0, b1, b2 = Node()
+  val RBANKS = b0.insert(s0_rbanks)
+  val RIDXS = b0.insert(s0_ridxs)
+  val READ_VALIDS = b0.insert(s0_read_valids)
+  val DO_READ = b0.insert(Vec(s0_do_bank_read))
+  val s1_rbanks = b1(RBANKS)
+  val s1_ridxs = b1(RIDXS)
+  val s1_read_valids = b1(READ_VALIDS)
   val s1_pipe_selection = pipeMap(i => Vec(PriorityEncoderOH((0 until lsuWidth).map(j =>
                             if (j < i) s1_read_valids(j) && s1_rbanks(j) === s1_rbanks(i)
                             else if (j == i) True else False))))
   val s1_ridx_match     = pipeMap(i => Vec((0 until lsuWidth).map(j => if (j < i) s1_ridxs(j) === s1_ridxs(i)
                                                     else if (j == i) True else False)))
   val s1_nacks          = pipeMap(w => s1_read_valids(w)
-    && (!RegNext(s0_do_bank_read(w)) || (s1_pipe_selection(w).asUInt & ~s1_ridx_match(w).asUInt).orR)
+    && (!b1(DO_READ)(w) || (s1_pipe_selection(w).asUInt & ~s1_ridx_match(w).asUInt).orR)
   )
   val s1_bank_selection = pipeMap(w => Mux1H(s1_pipe_selection(w), s1_rbanks))
 
   //----------------------------------------------------------------------------------------------------
 
-  val s2_bank_selection = RegNext(s1_bank_selection)
+  val BANK_SEL = b1.insert(s1_bank_selection)
+  val s2_bank_selection = b2(BANK_SEL)
   io.s1_nacks          := s1_nacks
 
   val data_arrays = Seq.tabulate(nBanks) {
     b => new SyncReadVecMem(bankSize, nWays * rowWords, UInt(encDataBits bits)).setName(s"array_${b}")
   }
-  val s2_bank_reads = Reg(Vec.fill(nBanks)(Vec.fill(nWays)(UInt(encRowBits bits))))
+  val bank_reads = Vec.fill(nBanks)(Vec.fill(nWays)(UInt(encRowBits bits)))
+  val BANK_READS = b1.insert(bank_reads)
+  val s2_bank_reads = b2(BANK_READS)
   for (b <- 0 until nBanks) {
     val array = data_arrays(b)
 
@@ -394,7 +401,7 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
     } else {
       array.read(ridx, read_en)
     }
-    s2_bank_reads(b).assignFromBits(rdata.asBits)
+    bank_reads(b).assignFromBits(rdata.asBits)
 
     val data = Vec.fill(nWays * rowWords)(UInt(encDataBits bits))
     for (w <- 0 until nWays) {
@@ -409,6 +416,8 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
       io.resp(i)(w) := s2_bank_reads.at(s2_bank_selection(i))(w)
     }
   }
+  Builder(Seq(StageLink(b0, b1), StageLink(b1, b2)))
+
 }
 
 /**
@@ -644,26 +653,55 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   val s0_send_resp_or_nack = Mux(io.lsu.req.fire, s0_valid,
     Mux(mshrs.io.replay.fire && isRead(mshrs.io.replay.payload.uop.mem_cmd), oneHot0, allZero))
 
-  val s1_req          = RegNext(s0_req)
-  for (w <- 0 until lsuWidth)
-    s1_req(w).uop.br_mask := GetNewBrMask(io.lsu.brupdate, s0_req(w).uop)
+  val REQ = Payload(new BoomDCacheReq)
+  val SEND = Payload(Bool())
+  val TAG_WAY = Payload(UInt(nWays bits))
+  val META = Payload(cloneOf(meta(0).io.resp))
+  val PROBE_NACK = Payload(Bool())
+  val DATA_NACK = Payload(Bool())
+  val WB_IDX_MATCH = Payload(Bool())
+  val TYPE = Payload(cloneOf(s0_type))
+  val META_WAY = Payload(UInt(nWays bits))
+  val REPLAY_WAY = Payload(UInt(nWays bits))
+  val WB_WAY = Payload(UInt(nWays bits))
+
+  // Common context has no valid: every field advances on every cycle.
+  val common = new Area {
+    val c0, c1, c2 = Node()
+    c0(TYPE) := s0_type
+    c0(META_WAY) := mshrs.io.meta_read.payload.way_en
+    c0(REPLAY_WAY) := mshrs.io.replay.payload.way_en
+    c0(WB_WAY) := wb.io.data_req.payload.way_en
+    val links = Seq(StageLink(c0, c1), StageLink(c1, c2))
+  }
   val s2_store_failed = Bool()
-  val s1_valid = widthMap(w =>
-                 RegNext(s0_valid(w)                                     &&
-                         !IsKilledByBranch(io.lsu.brupdate, False, s0_req(w).uop) &&
-                         !(io.lsu.exception && s0_req(w).uop.uses_ldq)   &&
-                         !(s2_store_failed && io.lsu.req.fire && s0_req(w).uop.uses_stq)) init False)
+  val lane = for (w <- 0 until lsuWidth) yield new Area {
+    val s0, s0k, s1, s1k, s2 = Node()
+    s0.valid := s0_valid(w)
+    s0(REQ) := s0_req(w)
+    s0(SEND) := s0_send_resp_or_nack(w)
+    val k0 = BranchPipeline.boundary(s0, s0k, REQ, io.lsu.brupdate, False)
+    k0.terminateWhen(io.lsu.exception && s0(REQ).uop.uses_ldq)
+    k0.terminateWhen(s2_store_failed && io.lsu.req.fire && s0(REQ).uop.uses_stq)
+    val l01 = StageLink(s0k, s1)
+    val k1 = BranchPipeline.boundary(s1, s1k, REQ, io.lsu.brupdate, False)
+    k1.terminateWhen(io.lsu.s1_kill(w))
+    k1.terminateWhen(io.lsu.exception && s1(REQ).uop.uses_ldq)
+    k1.terminateWhen(s2_store_failed && common.c1(TYPE) === t_lsu && s1(REQ).uop.uses_stq)
+    val l12 = StageLink(s1k, s2)
+    def links = Seq(k0, l01, k1, l12)
+  }
+  val s1_req = widthMap(w => lane(w).s1(REQ))
+  val s1_valid = widthMap(w => lane(w).s1.isValid)
 
   for (w <- 0 until lsuWidth)
     assert(!(io.lsu.s1_kill(w) && !RegNext(io.lsu.req.fire) && !RegNext(io.lsu.req.payload(w).valid)))
-  val s1_addr         = s1_req.map(_.addr)
-  val s1_nack         = s1_addr.map(a => a(idxMSB downto idxLSB) === prober.io.meta_write.payload.idx && !prober.io.req.ready)
-  val s1_send_resp_or_nack = RegNext(s0_send_resp_or_nack)
-  val s1_type         = RegNext(s0_type)
-
-  val s1_mshr_meta_read_way_en = RegNext(mshrs.io.meta_read.payload.way_en)
-  val s1_replay_way_en         = RegNext(mshrs.io.replay.payload.way_en) // For replays, the metadata isn't written yet
-  val s1_wb_way_en             = RegNext(wb.io.data_req.payload.way_en)
+  val s1_addr = s1_req.map(_.addr)
+  val s1_nack = s1_addr.map(a => a(idxMSB downto idxLSB) === prober.io.meta_write.payload.idx && !prober.io.req.ready)
+  val s1_type = common.c1(TYPE)
+  val s1_mshr_meta_read_way_en = common.c1(META_WAY)
+  val s1_replay_way_en = common.c1(REPLAY_WAY)
+  val s1_wb_way_en = common.c1(WB_WAY)
 
   // tag check
   def wayMap[T <: Data](f: Int => T): Vec[T] = Vec((0 until nWays).map(f))
@@ -680,20 +718,19 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
     io.lsu.s1_nack_advisory(w) := data.io.s1_nacks(w)
   }
 
-  val s2_req   = RegNext(s1_req)
-  val s2_type  = RegNext(s1_type)
-  val s2_valid = widthMap(w =>
-                  RegNext(s1_valid(w) &&
-                         !io.lsu.s1_kill(w) &&
-                         !IsKilledByBranch(io.lsu.brupdate, False, s1_req(w).uop) &&
-                         !(io.lsu.exception && s1_req(w).uop.uses_ldq) &&
-                         !(s2_store_failed && (s1_type === t_lsu) && s1_req(w).uop.uses_stq)))
-  for (w <- 0 until lsuWidth)
-    s2_req(w).uop.br_mask := GetNewBrMask(io.lsu.brupdate, s1_req(w).uop)
-
-  val s2_tag_match_way = RegNext(s1_tag_match_way)
-  val s2_tag_match     = s2_tag_match_way.map(_.orR)
-  val s2_hit_state     = widthMap(i => Mux1H(s2_tag_match_way(i), wayMap((w: Int) => RegNext(meta(i).io.resp(w).coh))))
+  for (w <- 0 until lsuWidth) {
+    lane(w).s1(TAG_WAY) := s1_tag_match_way(w)
+    lane(w).s1(META) := meta(w).io.resp
+    lane(w).s1(PROBE_NACK) := s1_nack(w)
+    lane(w).s1(DATA_NACK) := data.io.s1_nacks(w)
+    lane(w).s1(WB_IDX_MATCH) := s1_wb_idx_matches(w)
+  }
+  val s2_req = widthMap(w => lane(w).s2(REQ))
+  val s2_type = common.c2(TYPE)
+  val s2_valid = widthMap(w => lane(w).s2.isValid)
+  val s2_tag_match_way = widthMap(w => lane(w).s2(TAG_WAY))
+  val s2_tag_match = s2_tag_match_way.map(_.orR)
+  val s2_hit_state = widthMap(i => Mux1H(s2_tag_match_way(i), lane(i).s2(META).map(_.coh)))
   val s2_has_permission = widthMap(w => s2_hit_state(w).onAccess(s2_req(w).uop.mem_cmd)._1)
   val s2_new_hit_state  = widthMap(w => s2_hit_state(w).onAccess(s2_req(w).uop.mem_cmd)._3)
 
@@ -702,7 +739,7 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   assert(!(s2_type === t_replay && !s2_hit(0)), "Replays should always hit")
   assert(!(s2_type === t_wb && !s2_hit(0)), "Writeback should always see data hit")
 
-  val s2_wb_idx_matches = RegNext(s1_wb_idx_matches)
+  val s2_wb_idx_matches = widthMap(w => lane(w).s2(WB_IDX_MATCH))
 
   // lr/sc
   val debug_sc_fail_addr = Reg(UInt(coreMaxAddrBits bits)) init 0
@@ -711,8 +748,8 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   val lrsc_count = Reg(UInt(log2Ceil(lrscCycles) bits)) init 0
   val lrsc_valid = lrsc_count > lrscBackoff
   val lrsc_addr  = Reg(UInt(coreMaxAddrBits - blockOffBits bits))
-  val s2_lr = s2_req(0).uop.mem_cmd === M_XLR && (!RegNext(s1_nack(0)) || s2_type === t_replay)
-  val s2_sc = s2_req(0).uop.mem_cmd === M_XSC && (!RegNext(s1_nack(0)) || s2_type === t_replay)
+  val s2_lr = s2_req(0).uop.mem_cmd === M_XLR && (!lane(0).s2(PROBE_NACK) || s2_type === t_replay)
+  val s2_sc = s2_req(0).uop.mem_cmd === M_XSC && (!lane(0).s2(PROBE_NACK) || s2_type === t_replay)
   val s2_lrsc_addr_match = widthMap(w => lrsc_valid && lrsc_addr === (s2_req(w).addr >> blockOffBits))
   val s2_sc_fail = s2_sc && !s2_lrsc_addr_match(0)
   when (lrsc_count > 0) { lrsc_count := lrsc_count - 1 }
@@ -766,31 +803,32 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   // replacement policy (rocket's cacheParams.replacement)
   val replacer = new RandomReplacement(nWays)
   val s1_replaced_way_en = UIntToOH(replacer.way, nWays)
-  val s2_replaced_way_en = UIntToOH(RegNext(replacer.way), nWays)
-  val s2_repl_meta = widthMap(i => Mux1H(s2_replaced_way_en, wayMap((w: Int) => RegNext(meta(i).io.resp(w))).toSeq))
+  val REPL_WAY = common.c1.insert(replacer.way)
+  val s2_replaced_way_en = UIntToOH(common.c2(REPL_WAY), nWays)
+  val s2_repl_meta = widthMap(i => Mux1H(s2_replaced_way_en, lane(i).s2(META).toSeq))
 
   // nack because of incoming probe
-  val s2_nack_hit    = RegNext(Vec(s1_nack))
+  val s2_nack_hit    = widthMap(w => lane(w).s2(PROBE_NACK))
   // Nack when we hit something currently being evicted
   val s2_nack_victim = widthMap(w => s2_valid(w) &&  s2_hit(w) && mshrs.io.secondary_miss(w))
   // MSHRs not ready for request
   val s2_nack_miss   = widthMap(w => s2_valid(w) && !s2_hit(w) && !mshrs.io.req(w).ready)
   // Bank conflict on data arrays
-  val s2_nack_data   = widthMap(w => s2_valid(w) && RegNext(data.io.s1_nacks(w)))
+  val s2_nack_data   = widthMap(w => s2_valid(w) && lane(w).s2(DATA_NACK))
   // Can't allocate MSHR for same set currently being written back
   val s2_nack_wb     = widthMap(w => s2_valid(w) && !s2_hit(w) && s2_wb_idx_matches(w))
 
   s2_nack           := widthMap(w => (s2_nack_miss(w) || s2_nack_hit(w) || s2_nack_victim(w) || s2_nack_data(w) || s2_nack_wb(w)) && s2_type =/= t_replay)
   assert(!(s2_nack_data.reduce(_||_) && s2_type.isOneOf(t_replay, t_wb)))
   val s2_send_resp = widthMap(w => (
-    RegNext(s1_send_resp_or_nack(w)) &&
+    lane(w).s2(SEND) &&
       (!(s2_nack_hit(w) || s2_nack_victim(w) || s2_nack_data(w)) || s2_type === t_replay) &&
       s2_hit(w) && isRead(s2_req(w).uop.mem_cmd)
   ))
   val s2_send_store_ack = widthMap(w => (
-    RegNext(s1_send_resp_or_nack(w)) && !s2_nack(w) && isWrite(s2_req(w).uop.mem_cmd) &&
+    lane(w).s2(SEND) && !s2_nack(w) && isWrite(s2_req(w).uop.mem_cmd) &&
       (s2_hit(w) || mshrs.io.req(w).fire)))
-  val s2_send_nack = widthMap(w => (RegNext(s1_send_resp_or_nack(w)) && s2_nack(w)))
+  val s2_send_nack = widthMap(w => (lane(w).s2(SEND) && s2_nack(w)))
   for (w <- 0 until lsuWidth)
     assert(!(s2_send_resp(w) && s2_send_nack(w)))
 
@@ -826,7 +864,7 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   }
 
   mshrs.io.meta_resp.valid      := !s2_nack_hit(0) || prober.io.mshr_wb_rdy
-  mshrs.io.meta_resp.payload    := Mux1H(s2_tag_match_way(0), RegNext(meta(0).io.resp))
+  mshrs.io.meta_resp.payload    := Mux1H(s2_tag_match_way(0), lane(0).s2(META))
   when (mshrs.io.req.map(_.fire).reduce(_||_)) { replacer.miss }
   tl_out.a << mshrs.io.mem_acquire
 
@@ -905,11 +943,23 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   io.lsu.ll_resp << mshrs.io.resp
 
   // Store/amo hits
-  val s3_req   = new BoomDCacheReq
-  s3_req := RegNext(s2_req(0))
-  val s3_valid = RegNext(s2_valid(0) && s2_hit(0) && isWrite(s2_req(0).uop.mem_cmd) &&
-                         !s2_sc_fail && !(s2_send_nack(0) && s2_nack(0)))
-  val s3_data_word = RegNext(s2_data_word(0))
+  val DATA_WORD = Payload(cloneOf(s2_data_word(0)))
+  val store = new Area {
+    val t2, t3, t3d, t4, t5 = Node()
+    t2.valid := s2_valid(0) && s2_hit(0) && isWrite(s2_req(0).uop.mem_cmd) &&
+      !s2_sc_fail && !(s2_send_nack(0) && s2_nack(0))
+    t2(REQ) := s2_req(0)
+    t2(DATA_WORD) := s2_data_word(0)
+    t2(TAG_WAY) := s2_tag_match_way(0)
+    val l23 = StageLink(t2, t3)
+    val amo = CtrlLink(t3, t3d)
+    val updated = amo.bypass(REQ)
+    updated := t3(REQ)
+    val links = Seq(l23, amo, StageLink(t3d, t4), StageLink(t4, t5))
+  }
+  val s3_req = store.t3d(REQ)
+  val s3_valid = store.t3d.isValid
+  val s3_data_word = store.t3(DATA_WORD)
   for (w <- 1 until lsuWidth) {
     assert(!(s2_valid(w) && s2_hit(w) && isWrite(s2_req(w).uop.mem_cmd) &&
                          !s2_sc_fail && !(s2_send_nack(w) && s2_nack(w))),
@@ -917,10 +967,10 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   }
 
   // For bypassing
-  val s4_req   = RegNext(s3_req)
-  val s4_valid = RegNext(s3_valid)
-  val s5_req   = RegNext(s4_req)
-  val s5_valid = RegNext(s4_valid)
+  val s4_req   = store.t4(REQ)
+  val s4_valid = store.t4.isValid
+  val s5_req   = store.t5(REQ)
+  val s5_valid = store.t5.isValid
 
   val s3_bypass = widthMap(w => s3_valid && ((s2_req(w).addr >> wordOffBits) === (s3_req.addr >> wordOffBits)))
   val s4_bypass = widthMap(w => s4_valid && ((s2_req(w).addr >> wordOffBits) === (s4_req.addr >> wordOffBits)))
@@ -937,10 +987,10 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   amoalu.io.mask := new StoreGen(s3_req.uop.mem_size, s3_req.addr, U(0), xLen/8).mask
   amoalu.io.cmd  := s3_req.uop.mem_cmd
   amoalu.io.lhs  := s3_data_word.resized
-  amoalu.io.rhs  := RegNext(s2_req(0).data)
+  amoalu.io.rhs  := store.t3(REQ).data
 
-  s3_req.data := amoalu.io.out
-  val s3_way   = RegNext(s2_tag_match_way(0))
+  store.updated.data := amoalu.io.out
+  val s3_way   = store.t3(TAG_WAY)
 
   dataWriteArb.io.in(0).valid           := s3_valid
   dataWriteArb.io.in(0).payload.addr    := s3_req.addr.resized
@@ -949,4 +999,8 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   dataWriteArb.io.in(0).payload.way_en  := s3_way
 
   io.lsu.ordered := mshrs.io.fence_rdy && !s1_valid.reduce(_||_) && !s2_valid.reduce(_||_)
+  Builder(lane.flatMap(_.links) ++ common.links ++ store.links)
+  Seq(store.t3, store.t4, store.t5).foreach(_.valid.removeInitAssignments())
+  lane.foreach(_.s2.valid.removeInitAssignments())
+
 }

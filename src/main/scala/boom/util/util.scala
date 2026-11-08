@@ -13,6 +13,7 @@ package boom.util
 
 import spinal.core._
 import spinal.lib._
+import spinal.lib.misc.pipeline.{Builder, Node, StageLink}
 import rocketchip.config.Parameters
 import rocketchip.util._
 
@@ -462,17 +463,24 @@ class BranchKillablePipeline[T <: Data with HasBoomUOP](gen: HardType[T], stages
     val resp = out(Vec.fill(stages)(Flow(gen())))
   }
   require(stages > 0)
-  val uops = Reg(Vec.fill(stages)(Flow(gen())))
-  uops(0).valid := io.req.valid && !IsKilledByBranch(io.brupdate, io.flush, io.req.payload)
-  uops(0).payload := UpdateBrMask(io.brupdate, io.req.payload)
-  for (i <- 1 until stages) {
-    uops(i).valid := uops(i - 1).valid && !IsKilledByBranch(io.brupdate, io.flush, uops(i - 1).payload)
-    uops(i).payload := UpdateBrMask(io.brupdate, uops(i - 1).payload)
+  val nodes = Vector.fill(stages + 1)(Node())
+  val request = nodes.head.insert(io.req.payload)
+  nodes.head.valid := io.req.valid
+  val links = (0 until stages).flatMap { i =>
+    val boundary = Node()
+    Vector(BranchPipeline.boundary(nodes(i), boundary, request, io.brupdate, io.flush),
+      StageLink(boundary, nodes(i + 1)))
   }
-
-  for (i <- 0 until stages) { when(ClockDomain.current.isResetActive) { uops(i).valid := False } }
-
-  io.resp := uops
+  for (i <- 0 until stages) {
+    io.resp(i).valid := nodes(i + 1).isValid
+    io.resp(i).payload := nodes(i + 1)(request)
+  }
+  Builder(links)
+  // The original uses an explicit synchronous reset assignment, not init(False).
+  nodes.tail.foreach { node =>
+    node.valid.removeInitAssignments()
+    when(ClockDomain.current.isResetActive) { node.valid := False }
+  }
 }
 
 object BoomCoreStringPrefix {

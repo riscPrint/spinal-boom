@@ -21,9 +21,10 @@ class RiscvTestsSpec extends AnyFunSuite {
   // commits (one cycle later still), so it reads back 1: upstream BOOM behaviour.
   val excluded = Set("rv64ui-p-ma_data", "rv64ui-v-ma_data", "rv64mi-p-instret_overflow")
 
-  // RISCV_TESTS_CONFIG selects the BOOM preset (small/medium/large/mega/giga).
+  // RISCV_TESTS_CONFIG selects the core config: a preset (small/medium/large/mega/giga)
+  // or an extra config from SimConfigs (tapeout/alpha21264/fasttage/boom2/knobs).
   val configName = sys.env.getOrElse("RISCV_TESTS_CONFIG", "small")
-  val tileConfig = boom.common.BoomConfigs.named(configName)
+  val tileConfig = SimConfigs(configName)
   // RISCV_TESTS_RVFI enables the RVFI port and checks it with riscv-formal's monitor.
   lazy val compiled = BoomSim.compile(tileConfig, configName, wave = sys.env.contains("RISCV_TESTS_WAVE"),
     rvfi = sys.env.contains("RISCV_TESTS_RVFI"))

@@ -25,3 +25,8 @@ gem5/bench/build/
 
 # Conditional register audit logs
 audit-results/
+# Local cycle-equivalence baselines (scripts/cycle-equivalence.py)
+golden/
+
+# Python runner cache
+__pycache__/

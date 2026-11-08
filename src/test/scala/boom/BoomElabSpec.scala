@@ -39,6 +39,14 @@ class BoomElabSpec extends AnyFunSuite {
   elab("MemExeUnit") { implicit p => new MemExeUnit(hasAGen = true, hasDGen = true) }
   elab("UniqueExeUnit") { implicit p => new UniqueExeUnit(hasCSR = true, hasMul = true, hasDiv = true, hasIfpu = true) }
   elab("FPExeUnit") { implicit p => new FPExeUnit(hasFDiv = true, hasFpiu = true) }
+  test("FPExeUnit with zero and multiple fast-wakeup stages elaborates") {
+    for (latency <- Seq(3, 6)) {
+      val tile = BoomConfigs.small()
+      implicit val p: Parameters = BoomTestParams(tile.copy(core = tile.core.copy(
+        fpu = tile.core.fpu.map(_.copy(sfmaLatency = latency, dfmaLatency = latency)))))
+      SpinalBoomConfig("generated/test").generateVerilog(new FPExeUnit(hasFDiv = true, hasFpiu = true))
+    }
+  }
   elab("IssueUnitCollapsing") { implicit p => new IssueUnitCollapsing(IssueParams(issueWidth = 2, numEntries = 8, iqType = IQ_MEM, dispatchWidth = 2), 4) }
   elab("IssueUnitBanked") { implicit p => new IssueUnitBanked(IssueParams(issueWidth = 2, numEntries = 8, iqType = IQ_ALU, dispatchWidth = 2), 4, false) }
   elab("RenameStage(int)") { implicit p => new RenameStage(1, 52, 4, false) }
@@ -56,6 +64,15 @@ class BoomElabSpec extends AnyFunSuite {
   elab("LSU") { implicit p => new LSU }
   elab("BoomCore") { implicit p => new BoomCore() }
   elab("BoomTile") { implicit p => new BoomTile }
+
+  test("memory units with store-to-load forwarding and single-ported data arrays elaborate") {
+    for (base <- Seq(BoomConfigs.small(), BoomConfigs.large())) {
+      val tile = base.copy(core = base.core.copy(enableStLdForwarding = true, dcacheSinglePorted = true))
+      implicit val p: Parameters = BoomTestParams(tile)
+      SpinalBoomConfig("generated/test").generateVerilog(new LSU)
+      SpinalBoomConfig("generated/test").generateVerilog(new BoomNonBlockingDCache(0))
+    }
+  }
 
   test("medium/large configs: rename, rob, frontend elaborate") {
     for (tile <- Seq(BoomConfigs.medium(), BoomConfigs.large())) {
