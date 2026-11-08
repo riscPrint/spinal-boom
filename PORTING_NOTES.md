@@ -556,7 +556,7 @@ same names and widths for all 707 branch-register fields as the original
 register implementation.
 
 Also keep the independent ROB-flush captures at their original consumers.
-Sharing unreset registers merges their distinct initial values. Restoring only
+Sharing unreset registers merges initial values that can differ. Restoring only
 the branch-register names matches giga but changes a boom2 wrong-path Konata
 label. Restoring the independent flush captures as well matches both cases.
 The changed PCs equal unreset FTQ `ras_top` values (entry 39 in giga and entry 9
