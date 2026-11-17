@@ -34,7 +34,7 @@ class WrapperTest(unittest.TestCase):
         self.tool('rvw', '''printf '%s\\n' "$*" >> "$CALLS"
 if [ "$1" = doctor ]; then
   if [ "${FAIL_RESOLVE:-}" = 1 ]; then exit 7; fi
-  if [ "$3" = sail ]; then echo "$SOURCE/sail_riscv_sim"; else echo "$SOURCE"; fi
+  if [ "$3" = sail ]; then echo "${RVW_SAIL:-$SOURCE/sail_riscv_sim}"; else echo "$SOURCE"; fi
 fi
 ''')
         self.tool('uname', 'echo Linux\n')
@@ -64,17 +64,26 @@ done
         self.env['RISCV_TESTS'] = str(self.root / 'custom isa')
         self.run_script('scripts/build-riscv-tests.sh', '--envs', 'p')
         self.assertEqual(self.log.read_text().strip(),
-                         f'regress riscv-tests-build --out {self.env["RISCV_TESTS"]} --xlen 64 --envs p')
+                         f'regress riscv-tests-build --out {self.root}/target/verification/riscv-tests --elf-dir {self.env["RISCV_TESTS"]} --xlen 64 --envs p')
 
     def test_isa_default_output(self):
         self.run_script('scripts/build-riscv-tests.sh')
         self.assertEqual(self.log.read_text().strip(),
-                         f'regress riscv-tests-build --out {self.root}/target/verification/riscv-tests/isa --xlen 64')
+                         f'regress riscv-tests-build --out {self.root}/target/verification/riscv-tests --elf-dir {self.root}/target/verification/riscv-tests/isa --xlen 64')
 
     def test_sail_override_requires_resolver(self):
         self.env['RVW_SAIL'] = str(self.source / 'sail_riscv_sim')
         self.run_script('act4/build.sh')
         self.assertIn('doctor --resolve sail', self.log.read_text())
+
+    def test_arbitrary_sail_executable_name(self):
+        chosen = self.bin / 'chosen-sail'
+        self.tool('chosen-sail', 'printf selected > "$CALLS.selected"\n')
+        self.env['RVW_SAIL'] = str(chosen)
+        self.tool('make', 'sail_riscv_sim --version\n')
+        (self.bin / 'sail_riscv_sim').unlink()
+        self.run_script('act4/build.sh')
+        self.assertEqual(Path(str(self.log) + '.selected').read_text(), 'selected')
 
     def test_act4_private_source_and_selection(self):
         self.run_script('act4/build.sh', 'EXTENSIONS=I,M')

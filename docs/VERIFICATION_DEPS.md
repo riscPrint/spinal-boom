@@ -23,7 +23,7 @@ the pins and source validation. Its source cache is `RVW_SRC_CACHE`, with
 | ACT4 | `56d40ab301dba23dd3104c17bd969afbaaea1931` | `ACT4_SOURCE` |
 | riscv-tests | `d7e86f701b929b5d801f8cda1a4871ab05f452bb` | `RISCV_TESTS_SRC` |
 | riscv-formal | `c992aa61fdfe0846c5ed90324c596202a1c69b76` | `RISCV_FORMAL` |
-| Sail | `native0.15` | `RVW_SAIL` |
+| Sail | `0.15` | `RVW_SAIL` |
 
 `rvw doctor --resolve sail` must return the `sail_riscv_sim` executable path.
 `env.sh` adds its directory to PATH if it can resolve the cached executable.

@@ -13,13 +13,26 @@ explicit=""
 if [ "$#" -gt 0 ] && [ -d "$1" ]; then explicit="$1"; shift; fi
 act="$(boom_resolve_source act4 "$explicit")"
 # Use the managed Sail binary unless the caller already supplied it on PATH.
+sail=""
 if [ -n "${RVW_SAIL:-}" ] || ! command -v sail_riscv_sim >/dev/null 2>&1; then
   sail="$("${RVW:-rvw}" doctor --resolve sail)"
-  export PATH="$(dirname "$sail"):$PATH"
+
 fi
 mkdir -p "$root/target/verification/act4"
 private="$(mktemp -d "$root/target/verification/act4/source.XXXXXX")"
 trap 'rm -rf "$private"' EXIT
+if [ -n "$sail" ]; then
+  mkdir -p "$private/bin"
+  python3 - "$sail" "$private/bin/sail_riscv_sim" <<'PYSAIL'
+import pathlib
+import shlex
+import sys
+path = pathlib.Path(sys.argv[2])
+path.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.argv[1]) + ' "$@"\n')
+path.chmod(0o755)
+PYSAIL
+  export PATH="$private/bin:$PATH"
+fi
 boom_copy_source "$act" "$private/tree"
 
 # udb (the gem ACT uses to validate the config and derive headers) loads a Z3
