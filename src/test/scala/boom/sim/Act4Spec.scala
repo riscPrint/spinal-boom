@@ -9,7 +9,7 @@ import org.scalatest.funsuite.AnyFunSuite
  * act4/boom-rv64gc (see act4/README.md) and set ACT4_ELFS to the `elfs` directory.
  */
 class Act4Spec extends AnyFunSuite {
-  val elfDir = new java.io.File(sys.env.getOrElse("ACT4_ELFS", "../ref/act4/work/boom-rv64gc/elfs"))
+  val elfDir = new java.io.File(sys.env.getOrElse("ACT4_ELFS", "target/verification/act4/work/boom-rv64gc/elfs"))
   val filter = sys.env.get("ACT4_FILTER").map(_.r)
 
   // ACT4_RVFI enables the RVFI port and checks it with riscv-formal's monitor.
@@ -19,10 +19,13 @@ class Act4Spec extends AnyFunSuite {
   def elfs(d: java.io.File): Seq[java.io.File] =
     Option(d.listFiles()).toSeq.flatten.flatMap(f => if (f.isDirectory) elfs(f) else Seq(f).filter(_.getName.endsWith(".elf")))
 
+  require(elfDir.isDirectory, s"Missing ACT4 directory: $elfDir. Run act4/build.sh or set ACT4_ELFS.")
   val tests = elfs(elfDir)
     .map(f => elfDir.toPath.relativize(f.toPath).toString.stripSuffix(".elf") -> f.getPath)
     .filter { case (n, _) => filter.forall(_.findFirstIn(n).isDefined) }
     .sortBy(_._1)
+
+  require(tests.nonEmpty, s"No ACT4 tests selected in $elfDir. Check ACT4_FILTER.")
 
   val fixedSeed = sys.env.get("ACT4_SEED").map(_.toInt)
 

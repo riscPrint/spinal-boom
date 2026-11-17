@@ -18,8 +18,6 @@ run small-rvfi env RISCV_TESTS_CONFIG=small RISCV_TESTS_RVFI=1 RISCV_TESTS_SEED=
 run medium env RISCV_TESTS_CONFIG=medium RISCV_TESTS_SEED=1 sbt 'testOnly boom.sim.RiscvTestsSpec'
 run vm-build bash tests/vm/build.sh
 run vm sbt 'testOnly boom.sim.VmTestsSpec'
-if test -d ../ref/act4/work/boom-rv64gc/elfs; then
-  run act4 sbt 'testOnly boom.sim.Act4Spec'
-fi
+run act4 sbt 'testOnly boom.sim.Act4Spec'
 run large-bench env BENCH_DIR=/Users/mahir/fun/saviour/risc-v-workstation/examples/boom/out/arch/bench BENCH_CONFIG=large sbt 'testOnly boom.sim.BenchmarksSpec'
 exit "$failed"

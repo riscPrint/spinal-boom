@@ -12,9 +12,11 @@
 
 ## Running
 
+See [dependency setup](../docs/VERIFICATION_DEPS.md) first.
+
 ```
-act4/build.sh ../ref/act4                    # all suites -> ../ref/act4/work/boom-rv64gc/elfs
-act4/build.sh ../ref/act4 EXTENSIONS=I,M     # a subset
+act4/build.sh                    # all suites -> target/verification/act4/work/boom-rv64gc/elfs
+act4/build.sh EXTENSIONS=I,M     # a subset
 sbt "testOnly boom.sim.Act4Spec"             # run them (ACT4_ELFS, ACT4_FILTER, ACT4_RVFI, ACT4_VERBOSE, ...)
 ```
 

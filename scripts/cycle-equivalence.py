@@ -71,13 +71,15 @@ def sha256(path):
 
 
 def programs(which, expression):
-    isa = Path(os.environ.get("RISCV_TESTS", str(ROOT / "../ref/riscv-tests/build/isa"))).resolve()
+    isa = Path(os.environ.get("RISCV_TESTS", str(ROOT / "target/verification/riscv-tests/isa"))).resolve()
     vm = ROOT / "tests/vm/build"
     bench = Path(os.environ.get("BENCH_DIR", str(ROOT / "gem5/bench/build/bare"))).resolve()
     selected = []
     if os.environ.get("EQ_ELF"):
         selected = [("elf--" + Path(os.environ["EQ_ELF"]).name, Path(os.environ["EQ_ELF"]).resolve(), 200000)]
     else:
+        if not isa.is_dir():
+            raise ValueError(f"missing ISA directory {isa}; run scripts/build-riscv-tests.sh or set RISCV_TESTS")
         names = sorted(p.name for p in isa.iterdir() if p.is_file() and not p.name.endswith(".dump")
                        and any(p.name.startswith(f"{s}-{e}-") for s in SUITES for e in ("p", "v"))
                        and p.name not in EXCLUDED)

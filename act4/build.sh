@@ -3,16 +3,24 @@
 #
 #   act4/build.sh [act4 checkout] [make args...]
 #
-# e.g. act4/build.sh ../ref/act4                 # every extension in the config
-#      act4/build.sh ../ref/act4 EXTENSIONS=I,M  # a subset
-#
-# ELFs land in <act4 checkout>/work/boom-rv64gc/elfs (the default ACT4_ELFS of
-# boom.sim.Act4Spec). Needs ACT4's prerequisites (uv/mise, Ruby, a riscv64 GCC)
-# and sail_riscv_sim on PATH.
+# Optional source checkout comes first. Remaining arguments go to make.
+# Resolve cached sources with rvw; acquire them separately with rvw doctor.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-act="$(cd "${1:-$here/../../ref/act4}" && pwd)"
-shift || true
+root="$(cd "$here/.." && pwd)"
+source "$root/scripts/verification-deps.sh"
+explicit=""
+if [ "$#" -gt 0 ] && [ -d "$1" ]; then explicit="$1"; shift; fi
+act="$(boom_resolve_source act4 "$explicit")"
+# Use the managed Sail binary unless the caller already supplied it on PATH.
+if [ -n "${RVW_SAIL:-}" ] || ! command -v sail_riscv_sim >/dev/null 2>&1; then
+  sail="$("${RVW:-rvw}" doctor --resolve sail)"
+  export PATH="$(dirname "$sail"):$PATH"
+fi
+mkdir -p "$root/target/verification/act4"
+private="$(mktemp -d "$root/target/verification/act4/source.XXXXXX")"
+trap 'rm -rf "$private"' EXIT
+boom_copy_source "$act" "$private/tree"
 
 # udb (the gem ACT uses to validate the config and derive headers) loads a Z3
 # library it downloaded at install time, and on macOS that download is the Linux
@@ -31,4 +39,18 @@ if [ "$(uname)" = Darwin ] && [ -d "$HOME/.cache/udb/z3" ]; then
   export XDG_CACHE_HOME="$cache"
 fi
 
-make -C "$act" CONFIG_FILES="$here/boom-rv64gc/test_config.yaml" "$@"
+work="$root/target/verification/act4/work"
+if [ -n "${ACT4_ELFS:-}" ]; then
+  # An arbitrary caller output path need not follow ACT4's directory layout.
+  elfs="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$ACT4_ELFS")"
+  work="$private/work"
+fi
+make -C "$private/tree" CONFIG_FILES="$here/boom-rv64gc/test_config.yaml" \
+  WORKDIR="$work" "$@"
+if [ -n "${ACT4_ELFS:-}" ]; then
+  python3 - "$work/boom-rv64gc/elfs" "$elfs" <<'PYOUT'
+import shutil
+import sys
+shutil.copytree(sys.argv[1], sys.argv[2], dirs_exist_ok=True)
+PYOUT
+fi
