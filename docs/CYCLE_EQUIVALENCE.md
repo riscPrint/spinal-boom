@@ -43,7 +43,7 @@ cases, simulation failure, timeout and any trace difference all exit nonzero.
 | `EQ_ELF` | unset | Run one ELF instead of the named test set |
 | `EQ_MAX_CYCLES` | ISA/VM 200000, benchmark 50000000 | Override the simulation limit |
 | `EQ_CPUS_PER_WORKER` | host CPUs / parallelism | JVM processor budget; Spinal may independently use all CPUs for C++ builds |
-| `RISCV_TESTS` | `../ref/riscv-tests/build/isa` | Existing ISA binaries |
+| `RISCV_TESTS` | `target/verification/riscv-tests/isa` | Existing ISA binaries |
 | `BENCH_DIR` | `gem5/bench/build/bare` | Existing benchmark binaries |
 
 Use identical options for record and check. A filtered check can select a subset

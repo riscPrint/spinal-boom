@@ -3,13 +3,20 @@
 #
 #   formal/run.sh [riscv-formal dir] [make args...]
 #
-# e.g. formal/run.sh ../ref/riscv-formal -j4            # all checks
-#      formal/run.sh ../ref/riscv-formal cover_ch0      # just the cover check
+# e.g. formal/run.sh -j4            # all checks
+#      formal/run.sh cover_ch0      # just the cover check
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
-rvf="$(cd "${1:-$root/../ref/riscv-formal}" && pwd)"
-shift || true
+source "$root/scripts/verification-deps.sh"
+explicit=""
+if [ "$#" -gt 0 ] && [ -d "$1" ]; then explicit="$1"; shift; fi
+source_dir="$(boom_resolve_source riscv-formal "$explicit")"
+mkdir -p "$root/target/verification/formal"
+private="$(mktemp -d "$root/target/verification/formal/run.XXXXXX")"
+rvf="$private/source"
+boom_copy_source "$source_dir" "$rvf"
+echo "Formal work directory: $private" >&2
 
 cd "$root"
 source env.sh

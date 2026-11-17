@@ -7,7 +7,7 @@ import org.scalatest.funsuite.AnyFunSuite
  * Set RISCV_TESTS to the directory holding the built isa/ binaries.
  */
 class RiscvTestsSpec extends AnyFunSuite {
-  val testDir = sys.env.getOrElse("RISCV_TESTS", "../ref/riscv-tests/build/isa")
+  val testDir = sys.env.getOrElse("RISCV_TESTS", "target/verification/riscv-tests/isa")
   val filter = sys.env.get("RISCV_TESTS_FILTER").map(_.r)
 
   val suites = Seq("rv64ui", "rv64um", "rv64ua", "rv64uf", "rv64ud", "rv64uc", "rv64mi", "rv64si", "rv64uzba", "rv64uzbb", "rv64uzbs")
@@ -29,12 +29,18 @@ class RiscvTestsSpec extends AnyFunSuite {
   lazy val compiled = BoomSim.compile(tileConfig, configName, wave = sys.env.contains("RISCV_TESTS_WAVE"),
     rvfi = sys.env.contains("RISCV_TESTS_RVFI"))
 
-  val tests = new java.io.File(testDir).listFiles().toSeq
+  val directory = new java.io.File(testDir)
+  require(directory.isDirectory, s"Missing ISA directory: $testDir. Run scripts/build-riscv-tests.sh or set RISCV_TESTS.")
+  val tests = Option(directory.listFiles()).getOrElse(
+    throw new IllegalArgumentException(s"Cannot read ISA directory: $testDir")).toSeq
+    .filter(_.isFile)
     .map(_.getName)
     .filter(n => suites.exists(s => envs.exists(e => n.startsWith(s"$s-$e-"))) && !n.endsWith(".dump"))
     .filterNot(excluded)
     .filter(n => filter.forall(_.findFirstIn(n).isDefined))
     .sorted
+
+  require(tests.nonEmpty, s"No ISA tests selected in $testDir. Check RISCV_TESTS_FILTER and RISCV_TESTS_ENVS.")
 
   // RISCV_TESTS_SEED fixes the simulation seed; RISCV_TESTS_REPEAT runs each test with that many seeds.
   val fixedSeed = sys.env.get("RISCV_TESTS_SEED").map(_.toInt)

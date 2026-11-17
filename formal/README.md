@@ -9,14 +9,16 @@
 | `../src/main/scala/boom/system/GenFormal.scala` | generates `BoomFormalTop.v` here (small BOOM, RVFI on) |
 | `wrapper.sv` | riscv-formal `rvfi_wrapper` (NRET = 1) tying the free inputs to `rvformal_rand_reg` |
 | `checks.cfg` | riscv-formal check configuration (rv64imc, aligned memory mode, valid addresses = the formal top's memory) |
-| `run.sh` | generate the Verilog, link this directory into riscv-formal as `cores/boom`, run checks |
+| `run.sh` | generate the Verilog, use a private riscv-formal copy with `cores/boom`, run checks |
 | `rvfimon_c{1,2,3}.v` | riscv-formal's RVFI monitor, aligned mode, used in simulation; regenerated (and patched) by `gen_monitors.sh` |
 
 ## Running
 
+See [dependency setup](../docs/VERIFICATION_DEPS.md) first.
+
 ```
-formal/run.sh ../ref/riscv-formal cover_ch0     # how deep is the first retirement?
-formal/run.sh ../ref/riscv-formal -j8           # everything in checks.cfg
+formal/run.sh cover_ch0     # how deep is the first retirement?
+formal/run.sh -j8           # everything in checks.cfg
 ```
 
 Needs yosys, SymbiYosys and a solver (oss-cad-suite; `checks.cfg` uses bitwuzla).

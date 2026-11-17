@@ -22,8 +22,13 @@
 # accesses, and RVFI reports word-aligned mem_addr with byte-lane masks/data.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-rvf="$(cd "${1:-$here/../../ref/riscv-formal}" && pwd)"
-cd "$rvf/monitor"
+source "$here/../scripts/verification-deps.sh"
+source_dir="$(boom_resolve_source riscv-formal "${1:-}")"
+mkdir -p "$here/../target/verification/formal"
+private="$(mktemp -d "$here/../target/verification/formal/monitors.XXXXXX")"
+trap 'rm -rf "$private"' EXIT
+boom_copy_source "$source_dir" "$private/source"
+cd "$private/source/monitor"
 for n in 1 2 3; do
   python3 generate.py -a -i rv64imc -c $n -p rvfimon_c$n |
     perl -pe 's/(\$signed\([^()]*(?:\([^()]*\)[^()]*)*\)) ([\/%]) (\$signed\([^()]*(?:\([^()]*\)[^()]*)*\))/\$unsigned($1 $2 $3)/g' |
