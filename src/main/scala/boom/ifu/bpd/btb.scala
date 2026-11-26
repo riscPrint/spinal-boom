@@ -12,8 +12,7 @@ case class BoomBTBParams(
   nSets: Int = 128,
   nWays: Int = 2,
   offsetSz: Int = 13,
-  extendedNSets: Int = 128,
-  useFlops: Boolean = false
+  extendedNSets: Int = 128
 )
 
 class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p: Parameters) extends BranchPredictorBank()(p)
@@ -165,53 +164,29 @@ class BTBBranchPredictorBank(params: BoomBTBParams = BoomBTBParams())(implicit p
     s1_update_wmeta_data(w).is_br   := s1_update.payload.br_mask(w)
   }
 
-  if (params.useFlops) {
-    for (w <- 0 until nWays) {
-      val meta = Reg(Vec.fill(nSets)(Vec.fill(bankWidth)(BTBMeta())))
-      val btb  = Reg(Vec.fill(nSets)(Vec.fill(bankWidth)(BTBEntry())))
-      s1_req_rmeta(w) := meta.at(s1_idx)
-      s1_req_rbtb(w)  := btb.at(s1_idx)
-      for (i <- 0 until bankWidth) {
-        when (doing_reset || s1_update_meta.write_way === w || Bool(nWays == 1)) {
-          when (doing_reset || s1_update_wbtb_mask(i)) {
-            btb.write(Mux(doing_reset, reset_idx.resize(s1_update_idx.getWidth), s1_update_idx))(_(i) := Mux(doing_reset,
-              BTBEntry().getZero, s1_update_wbtb_data))
-          }
-          when (doing_reset || s1_update_wmeta_mask(i)) {
-            meta.write(Mux(doing_reset, reset_idx.resize(s1_update_idx.getWidth), s1_update_idx))(_(i) := Mux(doing_reset,
-              BTBMeta().getZero, s1_update_wmeta_data(i)))
-          }
-        }
-      }
-    }
-    val ebtb = Reg(Vec.fill(extendedNSets)(UInt(vaddrBitsExtended bits)))
-    s1_req_rebtb := ebtb.at(s1_idx)
+  for (w <- 0 until nWays) {
+    val meta = new SyncReadVecMem(nSets, bankWidth, BTBMeta()).setName(s"btb_meta_way_${w}")
+    val btb  = new SyncReadVecMem(nSets, bankWidth, BTBEntry()).setName(s"btb_data_way_${w}")
+    s1_req_rmeta(w) := meta.read(s0_idx, s0_valid)
+    s1_req_rbtb(w)  := btb.read(s0_idx, s0_valid)
 
-  } else {
-    for (w <- 0 until nWays) {
-      val meta = new SyncReadVecMem(nSets, bankWidth, BTBMeta()).setName(s"btb_meta_way_${w}")
-      val btb  = new SyncReadVecMem(nSets, bankWidth, BTBEntry()).setName(s"btb_data_way_${w}")
-      s1_req_rmeta(w) := meta.read(s0_idx, s0_valid)
-      s1_req_rbtb(w)  := btb.read(s0_idx, s0_valid)
-
-      val wen = doing_reset || s1_update_meta.write_way === w || Bool(nWays == 1)
-      btb.write(
-        Mux(doing_reset, reset_idx.resize(s1_update_idx.getWidth), s1_update_idx),
-        Mux(doing_reset, Vec.fill(bankWidth)(BTBEntry().getZero),
-                         Vec.fill(bankWidth)(s1_update_wbtb_data)),
-        Mux(doing_reset, ~U(0, bankWidth bits), s1_update_wbtb_mask).asBools,
-        wen
-      )
-      meta.write(
-        Mux(doing_reset, reset_idx.resize(s1_update_idx.getWidth), s1_update_idx),
-        Mux(doing_reset, Vec.fill(bankWidth)(BTBMeta().getZero),
-                         s1_update_wmeta_data),
-        Mux(doing_reset, ~U(0, bankWidth bits), s1_update_wmeta_mask).asBools,
-        wen
-      )
-    }
-    val ebtb = new SyncReadMemC(extendedNSets, UInt(vaddrBitsExtended bits)).setName("btb_ebtb")
-    s1_req_rebtb := ebtb.read(s0_idx, s0_valid)
-    ebtb.write(s1_update_idx, s1_update.payload.target, s1_update_wbtb_mask =/= 0 && offset_is_extended)
+    val wen = doing_reset || s1_update_meta.write_way === w || Bool(nWays == 1)
+    btb.write(
+      Mux(doing_reset, reset_idx.resize(s1_update_idx.getWidth), s1_update_idx),
+      Mux(doing_reset, Vec.fill(bankWidth)(BTBEntry().getZero),
+                       Vec.fill(bankWidth)(s1_update_wbtb_data)),
+      Mux(doing_reset, ~U(0, bankWidth bits), s1_update_wbtb_mask).asBools,
+      wen
+    )
+    meta.write(
+      Mux(doing_reset, reset_idx.resize(s1_update_idx.getWidth), s1_update_idx),
+      Mux(doing_reset, Vec.fill(bankWidth)(BTBMeta().getZero),
+                       s1_update_wmeta_data),
+      Mux(doing_reset, ~U(0, bankWidth bits), s1_update_wmeta_mask).asBools,
+      wen
+    )
   }
+  val ebtb = new SyncReadMemC(extendedNSets, UInt(vaddrBitsExtended bits)).setName("btb_ebtb")
+  s1_req_rebtb := ebtb.read(s0_idx, s0_valid)
+  ebtb.write(s1_update_idx, s1_update.payload.target, s1_update_wbtb_mask =/= 0 && offset_is_extended)
 }

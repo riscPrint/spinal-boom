@@ -20,66 +20,40 @@ import boom.exu._
 case class BoomCoreParams(
 // DOC include start: BOOM Parameters
   pgLevels: Int = 3,
-  fetchWidth: Int = 4,
-  decodeWidth: Int = 1,
-  numRobEntries: Int = 32,
+  fetchWidth: Int = 8,
+  decodeWidth: Int = 5,
+  numRobEntries: Int = 130,
   issueParams: Seq[IssueParams] = Seq(
-    IssueParams(issueWidth=2, numEntries=8, iqType=IQ_MEM, dispatchWidth=1),
-    IssueParams(issueWidth=1, numEntries=8, iqType=IQ_UNQ, dispatchWidth=1),
-    IssueParams(issueWidth=1, numEntries=8, iqType=IQ_ALU, dispatchWidth=1),
-    IssueParams(issueWidth=1, numEntries=8, iqType=IQ_FP , dispatchWidth=1)),
-  lsuWidth: Int = 1,
-  numLdqEntries: Int = 8,
-  numStqEntries: Int = 8,
-  numIntPhysRegisters: Int = 48,
-  numFpPhysRegisters: Int = 48,
+    IssueParams(issueWidth=2, numEntries=32, iqType=IQ_MEM, dispatchWidth=5, numSlowEntries=12),
+    IssueParams(issueWidth=1, numEntries=32, iqType=IQ_UNQ, dispatchWidth=5, numSlowEntries=24),
+    IssueParams(issueWidth=5, numEntries=20, iqType=IQ_ALU, dispatchWidth=5, numSlowEntries=10),
+    IssueParams(issueWidth=2, numEntries=32, iqType=IQ_FP , dispatchWidth=5, numSlowEntries=20)),
+  lsuWidth: Int = 2,
+  numLdqEntries: Int = 32,
+  numStqEntries: Int = 32,
+  numIntPhysRegisters: Int = 128,
+  numFpPhysRegisters: Int = 128,
   numImmPhysRegisters: Int = 32,
   numIrfReadPorts: Int = 3,
-  numFrfReadPorts: Int = 3,
-  numIrfBanks: Int = 1,
-  numFrfBanks: Int = 1,
-  maxBrCount: Int = 4,
-  numFetchBufferEntries: Int = 8,
-  enableColumnALUIssue: Boolean = false,
-  enableALUSingleWideDispatch: Boolean = false,
-  enableBankedFPFreelist: Boolean = false,
-  enablePrefetching: Boolean = false,
-  enableFastLoadUse: Boolean = false,
-  enableCompactingLSUDuringDispatch: Boolean = true,
-  enableAgenStage: Boolean = false,
-  enableStLdForwarding: Boolean = false,
-  enableFastPNR: Boolean = false,
-  enableSFBOpt: Boolean = true,
-  enableGHistStallRepair: Boolean = true,
-  enableBTBFastRepair: Boolean = true,
-  enableLoadToStoreForwarding: Boolean = true,
-  enableSuperscalarSnapshots: Boolean = true,
-  enableSlowBTBRedirect: Boolean = false,
-  enableBPDHPMs: Boolean = false,
+  numFrfReadPorts: Int = 6,
+  maxBrCount: Int = 20,
+  numFetchBufferEntries: Int = 40,
 
   useAtomicsOnlyForIO: Boolean = false,
-  ftq: FtqParameters = FtqParameters(nEntries=16),
+  ftq: FtqParameters = FtqParameters(nEntries=40),
   intToFpLatency: Int = 2,
   imulLatency: Int = 3,
   nPerfCounters: Int = 2,
   numRXQEntries: Int = 4,
   numRCQEntries: Int = 8,
-  numDCacheBanks: Int = 1,
-  dcacheSinglePorted: Boolean = false,
 
   nPMPs: Int = 8,
-  enableICacheDelay: Boolean = false,
-  icacheSinglePorted: Boolean = true,
 
   /* branch prediction */
-  enableBranchPrediction: Boolean = true,
   branchPredictor: Function2[BranchPredictionBankResponse, Parameters, Tuple2[Seq[BranchPredictorBank], BranchPredictionBankResponse]] = ((resp_in: BranchPredictionBankResponse, p: Parameters) => (Nil, resp_in)),
   globalHistoryLength: Int = 64,
-  localHistoryLength: Int = 32,
-  localHistoryNSets: Int = 128,
   bpdMaxMetaLength: Int = 120,
   numRasEntries: Int = 32,
-  enableRasTopRepair: Boolean = true,
 
   /* more stuff */
   useCompressed: Boolean = true,
@@ -103,23 +77,12 @@ case class BoomCoreParams(
   useUser: Boolean = true,
   useSupervisor: Boolean = false,
   useVM: Boolean = true,
-  useSCIE: Boolean = false,
   useRVE: Boolean = false,
   useBPWatch: Boolean = false,
   clockGate: Boolean = false,
   mcontextWidth: Int = 0,
   scontextWidth: Int = 0,
   trace: Boolean = false,
-
-  /* debug stuff */
-  enableCommitLogPrintf: Boolean = false,
-  enableBranchPrintf: Boolean = false,
-  enableMemtracePrintf: Boolean = false,
-
-  /* enableConservativeSNI: speculative non-interference */
-  enableConservativeSNI: Boolean = false,
-
-  enableTraceCoreIngress: Boolean = false,
 
   /* Spinal port: expose an RVFI (riscv-formal) trace port. Not part of upstream BOOM. */
   enableRVFI: Boolean = false
@@ -150,8 +113,8 @@ case class BoomCoreParams(
  */
 case class BoomTileParams(
   core: BoomCoreParams = BoomCoreParams(),
-  icache: Option[ICacheParams] = Some(ICacheParams()),
-  dcache: Option[DCacheParams] = Some(DCacheParams()),
+  icache: Option[ICacheParams] = Some(ICacheParams(rowBits = 128, nSets = 64, nWays = 8, fetchBytes = 4 * 4)),
+  dcache: Option[DCacheParams] = Some(DCacheParams(rowBits = 128, nSets = 64, nWays = 8, nMSHRs = 8, nTLBWays = 32)),
   btb: Option[BTBParams] = Some(BTBParams()),
   name: Option[String] = Some("boom_tile"),
   tileId: Int = 0,
@@ -228,9 +191,7 @@ trait HasBoomCoreParameters extends HasCoreParameters
   val numImmPhysRegs = boomParams.numImmPhysRegisters
 
   val numIrfReadPorts = boomParams.numIrfReadPorts
-  val numIrfBanks = boomParams.numIrfBanks
   val numFrfReadPorts = boomParams.numFrfReadPorts
-  val numFrfBanks = boomParams.numFrfBanks
 
   //************************************
   // Functional Units
@@ -288,19 +249,11 @@ trait HasBoomCoreParameters extends HasCoreParameters
 
   require(icacheParams.nSets <= 64, "Handling aliases in the ICache is buggy.")
 
-  val enableFastLoadUse = boomParams.enableFastLoadUse
-  val enableCompactingLSUDuringDispatch = boomParams.enableCompactingLSUDuringDispatch
-  val enableStLdForwarding = boomParams.enableStLdForwarding
-  val enableAgenStage = boomParams.enableAgenStage
-
-  val enablePrefetching = boomParams.enablePrefetching
   val nLBEntries = dcacheParams.nMSHRs
 
   //************************************
   // Branch Prediction
   val globalHistoryLength = boomParams.globalHistoryLength
-  val localHistoryLength = boomParams.localHistoryLength
-  val localHistoryNSets = boomParams.localHistoryNSets
   val bpdMaxMetaLength = boomParams.bpdMaxMetaLength
 
   def getBPDComponents(resp_in: BranchPredictionBankResponse, p: Parameters) = {
@@ -308,31 +261,6 @@ trait HasBoomCoreParameters extends HasCoreParameters
   }
 
   val nRasEntries = boomParams.numRasEntries max 2
-  val useRAS = boomParams.numRasEntries > 0
-  val enableRasTopRepair = boomParams.enableRasTopRepair
-
-  val useBPD = boomParams.enableBranchPrediction
-  val useSlowBTBRedirect = boomParams.enableSlowBTBRedirect
-
-  val useLHist = localHistoryNSets > 1 && localHistoryLength > 1
-
-  //************************************
-  // Extra Knobs and Features
-  val enableFastPNR = boomParams.enableFastPNR
-  val enableSFBOpt = boomParams.enableSFBOpt
-  val enableGHistStallRepair = boomParams.enableGHistStallRepair
-  val enableBTBFastRepair = boomParams.enableBTBFastRepair
-  val enableLoadToStoreForwarding = boomParams.enableLoadToStoreForwarding
-  val enableSuperscalarSnapshots = boomParams.enableSuperscalarSnapshots
-  val enableColumnALUIssue = boomParams.enableColumnALUIssue
-  val enableALUSingleWideDispatch = boomParams.enableALUSingleWideDispatch
-  require(!enableALUSingleWideDispatch || enableColumnALUIssue)
-  val enableColumnALUWrites = boomParams.enableColumnALUIssue && isPow2(aluWidth) && aluWidth > 1
-  val dcacheSinglePorted = boomParams.dcacheSinglePorted
-  val enableBankedFPFreelist = boomParams.enableBankedFPFreelist
-  val enableBPDHPMs = boomParams.enableBPDHPMs
-
-  val enableConservativeSNI = boomParams.enableConservativeSNI
 
   //************************************
   // Implicitly calculated constants
@@ -356,12 +284,6 @@ trait HasBoomCoreParameters extends HasCoreParameters
   require (numRobEntries % coreWidth == 0)
   require ((numLdqEntries-1) > coreWidth)
   require ((numStqEntries-1) > coreWidth)
-
-  //***********************************
-  // Debug printout parameters
-  val COMMIT_LOG_PRINTF   = boomParams.enableCommitLogPrintf // dump commit state, for comparision against ISA sim
-  val BRANCH_PRINTF       = boomParams.enableBranchPrintf // dump branch predictor results
-  val MEMTRACE_PRINTF     = boomParams.enableMemtracePrintf // dump trace of memory accesses to L1D for debugging
 
   //************************************
   // Other Non/Should-not-be sythesizable modules

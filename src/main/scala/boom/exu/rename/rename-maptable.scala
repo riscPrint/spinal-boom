@@ -99,20 +99,12 @@ class RenameMapTable(
   }
 
   // Create snapshots of new mappings.
-  if (enableSuperscalarSnapshots) {
-    for (i <- 0 until plWidth+1) {
-      when (io.ren_br_tags(i).valid) {
-        br_snapshots.write(io.ren_br_tags(i).payload)(_ := remap_table(i))
-      }
-    }
-  } else {
-    assert(PopCount(io.ren_br_tags.map(_.valid)) <= 1)
-    val do_br_snapshot = io.ren_br_tags.map(_.valid).reduce(_||_)
-    val br_snapshot_tag   = Mux1H(io.ren_br_tags.map(_.valid), io.ren_br_tags.map(_.payload))
-    val br_snapshot_table = Mux1H(io.ren_br_tags.map(_.valid), remap_table)
-    when (do_br_snapshot) {
-      br_snapshots.write(br_snapshot_tag)(_ := br_snapshot_table)
-    }
+  assert(PopCount(io.ren_br_tags.map(_.valid)) <= 1)
+  val do_br_snapshot = io.ren_br_tags.map(_.valid).reduce(_||_)
+  val br_snapshot_tag   = Mux1H(io.ren_br_tags.map(_.valid), io.ren_br_tags.map(_.payload))
+  val br_snapshot_table = Mux1H(io.ren_br_tags.map(_.valid), remap_table)
+  when (do_br_snapshot) {
+    br_snapshots.write(br_snapshot_tag)(_ := br_snapshot_table)
   }
 
   when (io.brupdate.b2.mispredict) {

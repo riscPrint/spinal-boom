@@ -10,7 +10,7 @@ import org.scalatest.funsuite.AnyFunSuite
  * observed as D$ store acks (the values may never leave the write-back D$).
  *
  * BENCH_DIR (default gem5/bench/build/bare) holds the `*.riscv` ELFs; BENCH_FILTER
- * is a regex on the name; BENCH_CONFIG picks the preset (default large);
+ * is a regex on the name; BENCH_CONFIG picks the preset (default giga);
  * BENCH_MAX_CYCLES, BENCH_SEED (default 1), BENCH_MEM_LATENCY (fixed memory latency
  * in cycles, default 20; use random for randomized timing).
  * Results go to gem5/results/rtl-<config>.csv.
@@ -18,7 +18,7 @@ import org.scalatest.funsuite.AnyFunSuite
 class BenchmarksSpec extends AnyFunSuite with BeforeAndAfterAll {
   val benchDir = new java.io.File(sys.env.getOrElse("BENCH_DIR", "gem5/bench/build/bare"))
   val filter = sys.env.get("BENCH_FILTER").map(_.r)
-  val configName = sys.env.getOrElse("BENCH_CONFIG", "large")
+  val configName = sys.env.getOrElse("BENCH_CONFIG", "giga")
   val tileConfig = boom.common.BoomConfigs.named(configName)
   lazy val compiled = BoomSim.compile(tileConfig, configName, wave = sys.env.contains("BENCH_WAVE"))
   val maxCycles = sys.env.get("BENCH_MAX_CYCLES").map(_.toLong).getOrElse(50000000L)

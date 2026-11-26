@@ -32,15 +32,6 @@ abstract class DataPrefetcher(implicit p: Parameters) extends BoomModule()(p)
 }
 
 /**
-  * Does not prefetch
-  */
-class NullPrefetcher(implicit p: Parameters) extends DataPrefetcher
-{
-  io.prefetch.valid := False
-  io.prefetch.payload.assignDontCare()
-}
-
-/**
   * Next line prefetcher. Grabs the next line on a cache miss
   */
 class NLPrefetcher(implicit p: Parameters) extends DataPrefetcher

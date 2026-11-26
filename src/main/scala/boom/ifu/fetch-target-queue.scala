@@ -123,11 +123,6 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
   val meta     = new SyncReadMemC(num_entries, Vec.fill(nBanks)(UInt(bpdMaxMetaLength bits)))
   val ram      = Reg(Vec.fill(num_entries)(new FTQBundle))
   val ghist    = Seq.fill(2) { new SyncReadMemC(num_entries, new GlobalHistory) }
-  val lhist    = if (useLHist) {
-    Some(new SyncReadMemC(num_entries, Vec.fill(nBanks)(UInt(localHistoryLength bits))))
-  } else {
-    None
-  }
 
   val do_enq = io.enq.fire
 
@@ -165,7 +160,6 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
     )
   )
 
-  lhist.foreach(l => l.write(enq_ptr, io.enq.payload.lhist, do_enq))
   ghist.foreach(g => g.write(enq_ptr, new_ghist, do_enq))
   meta.write(enq_ptr, io.enq.payload.bpd_meta, do_enq)
 
@@ -230,11 +224,6 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
   val bpdRd = FixedPipeline(bpd_any, bpdRead, 1, holdPayload = false, resetValid = false)
   val bpd_entry = bpdRd.payload.entry
   val bpd_ghist = ghist(0).read(bpd_idx, True)
-  val bpd_lhist = if (useLHist) {
-    lhist.get.read(bpd_idx, True)
-  } else {
-    Vec.fill(nBanks)(U(0, localHistoryLength bits))
-  }
   val bpd_meta  = meta.read(bpd_idx, True) // TODO fix these SRAMs
   val bpd_pc    = bpdRd.payload.pc
   val bpd_target = bpdRd.payload.target
@@ -301,7 +290,6 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
     io.bpdupdate.payload.cfi_is_br  := bpd_entry.br_mask(cfi_idx)
     io.bpdupdate.payload.cfi_is_jal := bpd_entry.cfi_type === CFI_JAL.U || bpd_entry.cfi_type === CFI_JALR.U
     io.bpdupdate.payload.ghist      := bpd_ghist
-    io.bpdupdate.payload.lhist      := bpd_lhist
     io.bpdupdate.payload.meta       := bpd_meta
 
     first_empty := False

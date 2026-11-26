@@ -66,20 +66,16 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
   val numFrfLogicalReadPorts = fpWidth * 3
   val numFrfWritePorts = fpWidth + lsuWidth
 
-  val issue_unit     = IssueUnit(fpIssueParams, numWakeupPorts, false, false)
+  val issue_unit     = IssueUnit(fpIssueParams, numWakeupPorts, false)
   issue_unit.setName("fp_issue_unit")
   issue_unit.io.rob_head.assignDontCare()
   issue_unit.io.rob_pnr_idx.assignDontCare()
-  val fregfileBankedWriteArray = Seq.fill(numFrfWritePorts) { None }
-  val fregfile       = new BankedRF(
+  val fregfile       = new PartiallyPortedRF(
     UInt(fLen+1 bits),
-    numFrfBanks,
-    numFrfLogicalReadPorts,
     numFpPhysRegs,
     numFrfLogicalReadPorts,
     numFrfReadPorts,
     numFrfWritePorts,
-    fregfileBankedWriteArray,
     "Floating Point"
   )
   val fp_bypasses = Vec.fill(fpWidth)(Flow(new ExeUnitResp(xLen+1)))

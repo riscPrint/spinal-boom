@@ -315,109 +315,10 @@ class BoomDuplicatedDataArray(implicit p: Parameters) extends AbstractBoomDataAr
       val array = new SyncReadVecMem(nSets * refillCycles, rowWords, UInt(encDataBits bits)).setName(s"array_${w}_${j}")
       val data = (0 until rowWords) map (i => io.write.payload.data(encDataBits*(i+1)-1 downto encDataBits*i))
       array.write(waddr, data, io.write.payload.wmask.asBools, io.write.payload.way_en(w) && io.write.valid)
-      if (dcacheSinglePorted)
-        io.resp(j)(w) := RegNext(array.read(raddr, io.read(j).payload.way_en(w) && io.read(j).valid).asBits.asUInt)
-      else
-        io.resp(j)(w) := RegNext(array.read(raddr, io.read(j).valid).asBits.asUInt)
+      io.resp(j)(w) := RegNext(array.read(raddr, io.read(j).valid).asBits.asUInt)
     }
     io.s1_nacks(j) := False
   }
-}
-
-class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray {
-
-  val nBanks   = boomParams.numDCacheBanks
-  val bankSize = nSets * refillCycles / nBanks
-  require (nBanks >= lsuWidth)
-  require (bankSize > 0)
-
-  val bankBits    = log2Ceil(nBanks)
-  val bankOffBits = log2Ceil(rowWords) + log2Ceil(wordBytes)
-  val bidxBits    = log2Ceil(bankSize)
-  val bidxOffBits = bankOffBits + bankBits
-
-  //----------------------------------------------------------------------------------------------------
-
-  val s0_rbanks = if (nBanks > 1) Vec(io.read.map(r => (r.payload.addr >> bankOffBits)(bankBits-1 downto 0))) else Vec(U(0, 1 bits))
-  val s0_wbank  = if (nBanks > 1) (io.write.payload.addr >> bankOffBits)(bankBits-1 downto 0) else U(0, 1 bits)
-  val s0_ridxs  = Vec(io.read.map(r => (r.payload.addr >> bidxOffBits)(bidxBits-1 downto 0)))
-  val s0_widx   = (io.write.payload.addr >> bidxOffBits)(bidxBits-1 downto 0)
-
-  val s0_read_valids    = Vec(io.read.map(_.valid))
-  val s0_bank_conflicts = pipeMap(w => {
-    ((s0_rbanks(w) === s0_wbank) && io.write.valid && Bool(dcacheSinglePorted)) ||
-    (0 until w).foldLeft(False)((c,i) => c || io.read(i).valid && s0_rbanks(i) === s0_rbanks(w))
-  })
-  val s0_do_bank_read   = s0_read_valids zip s0_bank_conflicts map {case (v,c) => v && !c}
-  val s0_bank_read_gnts = Transpose(s0_rbanks zip s0_do_bank_read map {case (b,d) => (UIntToOH(b, nBanks) & Fill(nBanks,d)).asBools.toSeq})
-  val s0_bank_write_gnt = (UIntToOH(s0_wbank, nBanks) & Fill(nBanks, io.write.valid)).asBools
-
-  //----------------------------------------------------------------------------------------------------
-
-  val b0, b1, b2 = Node()
-  val RBANKS = b0.insert(s0_rbanks)
-  val RIDXS = b0.insert(s0_ridxs)
-  val READ_VALIDS = b0.insert(s0_read_valids)
-  val DO_READ = b0.insert(Vec(s0_do_bank_read))
-  val s1_rbanks = b1(RBANKS)
-  val s1_ridxs = b1(RIDXS)
-  val s1_read_valids = b1(READ_VALIDS)
-  val s1_pipe_selection = pipeMap(i => Vec(PriorityEncoderOH((0 until lsuWidth).map(j =>
-                            if (j < i) s1_read_valids(j) && s1_rbanks(j) === s1_rbanks(i)
-                            else if (j == i) True else False))))
-  val s1_ridx_match     = pipeMap(i => Vec((0 until lsuWidth).map(j => if (j < i) s1_ridxs(j) === s1_ridxs(i)
-                                                    else if (j == i) True else False)))
-  val s1_nacks          = pipeMap(w => s1_read_valids(w)
-    && (!b1(DO_READ)(w) || (s1_pipe_selection(w).asUInt & ~s1_ridx_match(w).asUInt).orR)
-  )
-  val s1_bank_selection = pipeMap(w => Mux1H(s1_pipe_selection(w), s1_rbanks))
-
-  //----------------------------------------------------------------------------------------------------
-
-  val BANK_SEL = b1.insert(s1_bank_selection)
-  val s2_bank_selection = b2(BANK_SEL)
-  io.s1_nacks          := s1_nacks
-
-  val data_arrays = Seq.tabulate(nBanks) {
-    b => new SyncReadVecMem(bankSize, nWays * rowWords, UInt(encDataBits bits)).setName(s"array_${b}")
-  }
-  val bank_reads = Vec.fill(nBanks)(Vec.fill(nWays)(UInt(encRowBits bits)))
-  val BANK_READS = b1.insert(bank_reads)
-  val s2_bank_reads = b2(BANK_READS)
-  for (b <- 0 until nBanks) {
-    val array = data_arrays(b)
-
-    val ridx = Mux1H(s0_bank_read_gnts(b), s0_ridxs)
-    val way_en = Mux1H(s0_bank_read_gnts(b), io.read.map(_.payload.way_en))
-    val write_en = s0_bank_write_gnt(b)
-    val write_mask = (0 until nWays).flatMap { w =>
-      Mux(io.write.payload.way_en(w), io.write.payload.wmask, U(0, rowWords bits)).asBools
-    }
-    val read_en = CombInit(s0_bank_read_gnts(b).reduce(_||_))
-
-    val rdata = if (dcacheSinglePorted) {
-      assert(!(read_en && write_en))
-      array.read(ridx, !write_en && read_en)
-    } else {
-      array.read(ridx, read_en)
-    }
-    bank_reads(b).assignFromBits(rdata.asBits)
-
-    val data = Vec.fill(nWays * rowWords)(UInt(encDataBits bits))
-    for (w <- 0 until nWays) {
-      for (i <- 0 until rowWords) {
-        data(w*rowWords+i) := io.write.payload.data(encDataBits*(i+1)-1 downto encDataBits*i)
-      }
-    }
-    array.write(s0_widx, data, write_mask, write_en)
-  }
-  for (w <- 0 until nWays) {
-    for (i <- 0 until lsuWidth) {
-      io.resp(i)(w) := s2_bank_reads.at(s2_bank_selection(i))(w)
-    }
-  }
-  Builder(Seq(StageLink(b0, b1), StageLink(b1, b2)))
-
 }
 
 /**
@@ -483,7 +384,7 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   val prober = new BoomProbeUnit
   val mshrs = new BoomMSHRFile
   mshrs.io.clear_all    := io.lsu.force_order
-  mshrs.io.brupdate       := io.lsu.brupdate
+  mshrs.io.brupdate     := io.lsu.brupdate
   mshrs.io.exception    := io.lsu.exception
   mshrs.io.rob_pnr_idx  := io.lsu.rob_pnr_idx
   mshrs.io.rob_head_idx := io.lsu.rob_head_idx
@@ -508,7 +409,7 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   metaWriteArb.io.out.ready := meta.map(_.io.write.ready).reduce(_||_)
 
   // data
-  val data = if (boomParams.numDCacheBanks == 1) new BoomDuplicatedDataArray else new BoomBankedDataArray
+  val data = new BoomDuplicatedDataArray
   val dataWriteArb = new Arbiter(new L1DataWriteReq, 2)
   // 0 goes to pipeline, 1 goes to MSHR refills
   val dataReadArb = new Arbiter(new BoomL1DataReadReq, 3)
@@ -524,17 +425,13 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   data.io.write.valid   := dataWriteArb.io.out.fire
   data.io.write.payload := dataWriteArb.io.out.payload
   dataWriteArb.io.out.ready := True
-  val singlePortedDCacheWrite = data.io.write.valid && Bool(dcacheSinglePorted)
 
   // ------------
   // New requests
 
-  // In a 1-wide LSU, load/store wakeups and MSHR resps contend for same port, so
-  // we should block incoming requests when the MSHR trying to respond
-  val block_incoming_reqs = Bool(lsuWidth == 1) && mshrs.io.resp.valid
-  io.lsu.req.ready := metaReadArb.io.in(4).ready && dataReadArb.io.in(2).ready && !block_incoming_reqs
-  metaReadArb.io.in(4).valid := io.lsu.req.valid && !block_incoming_reqs
-  dataReadArb.io.in(2).valid := io.lsu.req.valid && !block_incoming_reqs
+  io.lsu.req.ready := metaReadArb.io.in(4).ready && dataReadArb.io.in(2).ready
+  metaReadArb.io.in(4).valid := io.lsu.req.valid
+  dataReadArb.io.in(2).valid := io.lsu.req.valid
   for (w <- 0 until lsuWidth) {
     // Tag read for new requests
     metaReadArb.io.in(4).payload.req(w).idx    := (io.lsu.req.payload(w).payload.addr >> blockOffBits).resized
@@ -554,16 +451,15 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   replay_req(0).addr       := mshrs.io.replay.payload.addr
   replay_req(0).data       := mshrs.io.replay.payload.data
   replay_req(0).is_hella   := mshrs.io.replay.payload.is_hella
-  // Don't let replays get nacked due to conflict with dcache write
-  mshrs.io.replay.ready    := metaReadArb.io.in(0).ready && dataReadArb.io.in(0).ready && !singlePortedDCacheWrite
+  mshrs.io.replay.ready    := metaReadArb.io.in(0).ready && dataReadArb.io.in(0).ready
   // Tag read for MSHR replays
   // We don't actually need to read the metadata, for replays we already know our way
-  metaReadArb.io.in(0).valid                 := mshrs.io.replay.valid && !singlePortedDCacheWrite
+  metaReadArb.io.in(0).valid                 := mshrs.io.replay.valid
   metaReadArb.io.in(0).payload.req(0).idx    := (mshrs.io.replay.payload.addr >> blockOffBits).resized
   metaReadArb.io.in(0).payload.req(0).way_en.assignDontCare()
   metaReadArb.io.in(0).payload.req(0).tag.assignDontCare()
   // Data read for MSHR replays
-  dataReadArb.io.in(0).valid                 := mshrs.io.replay.valid && !singlePortedDCacheWrite
+  dataReadArb.io.in(0).valid                 := mshrs.io.replay.valid
   dataReadArb.io.in(0).payload.req(0).addr   := mshrs.io.replay.payload.addr.resized
   dataReadArb.io.in(0).payload.req(0).way_en := mshrs.io.replay.payload.way_en
   dataReadArb.io.in(0).payload.valid         := widthMap(w => Bool(w == 0))
@@ -592,14 +488,14 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
   // Couple the two decoupled interfaces of the WBUnit's meta_read and data_read
   // Can't launch data read if possibility of conflict w. write
   // Tag read for write-back
-  metaReadArb.io.in(2).valid          := wb.io.meta_read.valid && !singlePortedDCacheWrite
+  metaReadArb.io.in(2).valid          := wb.io.meta_read.valid
   metaReadArb.io.in(2).payload.req(0) := wb.io.meta_read.payload
-  wb.io.meta_read.ready := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready && !singlePortedDCacheWrite
+  wb.io.meta_read.ready := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready
   // Data read for write-back
-  dataReadArb.io.in(1).valid          := wb.io.data_req.valid && !singlePortedDCacheWrite
+  dataReadArb.io.in(1).valid          := wb.io.data_req.valid
   dataReadArb.io.in(1).payload.req(0) := wb.io.data_req.payload
   dataReadArb.io.in(1).payload.valid  := widthMap(w => Bool(w == 0))
-  wb.io.data_req.ready  := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready && !singlePortedDCacheWrite
+  wb.io.data_req.ready  := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready
   assert(!(wb.io.meta_read.fire ^ wb.io.data_req.fire))
 
   // -------

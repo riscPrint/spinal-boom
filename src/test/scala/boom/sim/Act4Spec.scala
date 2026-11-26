@@ -3,7 +3,7 @@ package boom.sim
 import org.scalatest.funsuite.AnyFunSuite
 
 /**
- * RISC-V architectural certification tests (ACT4, riscv-arch-test) on the small
+ * RISC-V architectural certification tests (ACT4, riscv-arch-test) on giga
  * BOOM. The ELFs are self-checking (Sail's expected signature is compiled in), so a
  * test passes when it writes 1 to `tohost`. Build them with the config in
  * act4/boom-rv64gc (see act4/README.md) and set ACT4_ELFS to the `elfs` directory.
@@ -13,7 +13,7 @@ class Act4Spec extends AnyFunSuite {
   val filter = sys.env.get("ACT4_FILTER").map(_.r)
 
   // ACT4_RVFI enables the RVFI port and checks it with riscv-formal's monitor.
-  lazy val compiled = BoomSim.compile(boom.common.BoomConfigs.small(), "small",
+  lazy val compiled = BoomSim.compile(boom.common.BoomConfigs.giga(), "giga",
     wave = sys.env.contains("ACT4_WAVE"), rvfi = sys.env.contains("ACT4_RVFI"))
 
   def elfs(d: java.io.File): Seq[java.io.File] =

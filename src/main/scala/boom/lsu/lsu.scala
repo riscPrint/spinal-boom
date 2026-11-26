@@ -439,9 +439,9 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
 
     assert(!(dis_ld_val && dis_st_val), "A UOP is trying to go into both the LDQ and the STQ")
 
-    ldq_tail_oh = Mux((io.core.dis_uops(w).payload.uses_ldq && !io.core.dis_uops(w).payload.exception) || !Bool(enableCompactingLSUDuringDispatch),
+    ldq_tail_oh = Mux(io.core.dis_uops(w).payload.uses_ldq && !io.core.dis_uops(w).payload.exception,
       RotateL1(ldq_tail_oh), ldq_tail_oh)
-    stq_tail_oh = Mux((io.core.dis_uops(w).payload.uses_stq && !io.core.dis_uops(w).payload.exception) || !Bool(enableCompactingLSUDuringDispatch),
+    stq_tail_oh = Mux(io.core.dis_uops(w).payload.uses_stq && !io.core.dis_uops(w).payload.exception,
       RotateL1(stq_tail_oh), stq_tail_oh)
   }
 
@@ -1035,23 +1035,13 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   require (xLen >= fLen) // for correct SDQ size
 
   //-------------------------------------------------------------
-  // Speculative wakeup if loadUseDelay == 4
+  // Speculative wakeup if loadUseDelay == 5
   val wakeupArbs = Seq.fill(lsuWidth) { new Arbiter(new Wakeup, 2) }
   for (w <- 0 until lsuWidth) {
     wakeupArbs(w).io.out.ready := True
     wakeupArbs(w).io.in.foreach(_.payload.assignDontCare())
     io.core.iwakeups(w).valid   := wakeupArbs(w).io.out.valid
     io.core.iwakeups(w).payload := wakeupArbs(w).io.out.payload
-
-    if (enableFastLoadUse) {
-      wakeupArbs(w).io.in(1).valid := (will_fire_load_agen_exec(w)                     &&
-                                       dmem_req_fire(w)                                &&
-                                      !agen(w).payload.uop.fp_val)
-      wakeupArbs(w).io.in(1).payload.uop := agen(w).payload.uop
-      wakeupArbs(w).io.in(1).payload.bypassable := True
-      wakeupArbs(w).io.in(1).payload.speculative_mask := 0
-      wakeupArbs(w).io.in(1).payload.rebusy := False
-    }
   }
 
   //-------------------------------------------------------------
@@ -1201,8 +1191,6 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   val ldst_addr_matches    = Vec.fill(lsuWidth)(UInt(numStqEntries bits))
   // Mask of stores which we can forward from
   val ldst_forward_matches = Vec.fill(lsuWidth)(UInt(numStqEntries bits))
-  // Mask of stores we can forward to
-  val stld_prs2_matches    = Vec.fill(lsuWidth)(UInt(numStqEntries bits))
 
   val s1_executing_loads = ctxC.toMem(s0_executing_loads)
   val s1_set_execute     = CombInit(s1_executing_loads)
@@ -1354,7 +1342,6 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
 
   val addr_matches    = Vec.fill(lsuWidth)(Vec.fill(numStqEntries)(Bool()))
   val forward_matches = Vec.fill(lsuWidth)(Vec.fill(numStqEntries)(Bool()))
-  val prs2_matches    = Vec.fill(lsuWidth)(Vec.fill(numStqEntries)(Bool()))
   // age_matches(w)(i) |-> stq(i) is older than the searcher
   val age_matches     = Vec.fill(lsuWidth)(Vec.fill(numStqEntries)(Bool()))
 
@@ -1376,10 +1363,6 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
       addr_matches(w)(i)    := (mask_union =/= 0) && dword_addr_matches
       forward_matches(w)(i) := addr_matches(w)(i) && s_data.valid && (mask_union === lcam_mask(w))
 
-      prs2_matches(w)(i) := (s_uop.prs2 === lcam_uop(w).pdst &&
-                             s_uop.lrs2_rtype === RT_FIX &&
-                             Bool(enableLoadToStoreForwarding))
-
       // for the load address depend on this entry in laq, the entry must be younger than the head of the store queue (as the stq head always points to an invalid entry), but older than the next stq entry (means not younger) (in the perspective of the current load )at the point of issue
       assert(ClockDomain.current.isResetActive | io.core.brupdate.b1.mispredict_mask.orR | io.core.brupdate.b2.mispredict | s_valid === EntryValidFromAge(stq_head, stq_tail, U(i, stqAddrSz+1 bits)), s"Entry $i has failed")
 
@@ -1392,7 +1375,6 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     // address matches in store queue /\ is older than the current entry /\ valid
     ldst_addr_matches(w)    := (addr_matches(w).asUInt & age_matches(w).asUInt) & fast_stq_valids
     ldst_forward_matches(w) := (forward_matches(w).asUInt & age_matches(w).asUInt) & fast_stq_valids
-    stld_prs2_matches(w)    := (prs2_matches(w).asUInt & ~age_matches(w).asUInt) & fast_stq_valids
   }
 
   val stq_amos = Vec(stq_uop.map(u => u.is_fence || u.is_amo))
@@ -1459,15 +1441,6 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     }
   }
 
-  // Forward this load to the youngest matching store
-  val mem_stld_forward_stq_idx = widthMap(w => LSUAgePriorityEncoder(stld_prs2_matches(w).asBools, lcam_uop(w).stq_idx))
-  val mem_stld_forward_valid   = widthMap(w => do_ld_search(w) && bitAt(stld_prs2_matches(w), mem_stld_forward_stq_idx(w)))
-
-  val wb_stld_forward_valid = if (enableStLdForwarding)
-    Some(widthMap(w => ctx(w).toWb(mem_stld_forward_valid(w)))) else None
-  val wb_stld_forward_stq_idx = if (enableStLdForwarding)
-    Some(widthMap(w => ctx(w).toWb(mem_stld_forward_stq_idx(w)))) else None
-
   // Task 3: Clr unsafe bit in ROB for succesful t_ranslations
   //         Delay this a cycle to avoid going ahead of the exception broadcast
   //         The unsafe bit is cleared on the first translation, so no need to fire for load wakeups
@@ -1516,18 +1489,16 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
   io.core.lxcpt.payload := report.e1d(XCPT)
 
   // Task 4: Speculatively wakeup loads 1 cycle before they come back
-  // if loadUseDelay == 5
+  // (loadUseDelay == 5)
   for (w <- 0 until lsuWidth) {
-    if (!enableFastLoadUse) {
-      wakeupArbs(w).io.in(1).valid := (fired_load_agen_exec(w)      &&
-                                       mem_req_fire(w)    &&
-                                       !io.dmem.s1_nack_advisory(w) &&
-                                       !mem_incoming_uop(w).fp_val)
-      wakeupArbs(w).io.in(1).payload.uop := mem_incoming_uop(w)
-      wakeupArbs(w).io.in(1).payload.bypassable := True
-      wakeupArbs(w).io.in(1).payload.speculative_mask := 0
-      wakeupArbs(w).io.in(1).payload.rebusy := False
-    }
+    wakeupArbs(w).io.in(1).valid := (fired_load_agen_exec(w)      &&
+                                     mem_req_fire(w)    &&
+                                     !io.dmem.s1_nack_advisory(w) &&
+                                     !mem_incoming_uop(w).fp_val)
+    wakeupArbs(w).io.in(1).payload.uop := mem_incoming_uop(w)
+    wakeupArbs(w).io.in(1).payload.bypassable := True
+    wakeupArbs(w).io.in(1).payload.speculative_mask := 0
+    wakeupArbs(w).io.in(1).payload.rebusy := False
   }
 
   //-------------------------------------------------------------
@@ -1558,7 +1529,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     iresp(w).payload.assignDontCare()
     fresp(w).valid := False
     fresp(w).payload.assignDontCare()
-    io.core.iresp(w) := (if (enableFastLoadUse) iresp(w) else branchDelay(iresp(w)))
+    io.core.iresp(w) := branchDelay(iresp(w))
     io.core.fresp(w) := fresp(w)
   }
 
@@ -1581,7 +1552,7 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
     spec_wakeups(w).valid   := w2.valid
     spec_wakeups(w).payload := w2.payload
 
-    wb_spec_wakeups(w) := (if (enableFastLoadUse) w2 else w1)
+    wb_spec_wakeups(w) := w1
   }
   for (w <- 0 until lsuWidth) {
     wb_slow_wakeups(w).valid := False
@@ -1697,24 +1668,10 @@ class LSU(implicit p: Parameters) extends BoomModule()(p)
       ldq_debug_wb_data  .write(f_idx)(_ := loadgen.data.resized)
     }
 
-    // Forward loads to store-data
-    if (enableStLdForwarding) {
-      when (iresp(w).valid &&
-            iresp(w).payload.uop.uses_ldq &&
-            iresp(w).payload.uop.ldq_idx === wb_ldst_forward_ldq_idx(w) &&
-            wb_stld_forward_valid.get(w)) {
-        assert(!stq_data.at(wb_stld_forward_stq_idx.get(w)).valid)
-        stq_data.write(wb_stld_forward_stq_idx.get(w)) { d =>
-          d.valid   := True
-          d.payload := iresp(w).payload.data
-        }
-      }
-    }
-
     // Do wakeups
     wakeupArbs(w).io.in(0).valid := False
     wakeupArbs(w).io.in(0).payload.assignDontCare()
-    slow_wakeups(w) := (if (enableFastLoadUse) wb_slow_wakeups(w) else branchDelay(wb_slow_wakeups(w)))
+    slow_wakeups(w) := branchDelay(wb_slow_wakeups(w))
     when (slow_wakeups(w).valid) {
       when (spec_wakeups(w).valid) { // Do nothing, since the slow wakeup matches a earlier speculative wakeup
         assert(slow_wakeups(w).payload.uop.ldq_idx === spec_wakeups(w).payload.uop.ldq_idx)

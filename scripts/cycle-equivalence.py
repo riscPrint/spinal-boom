@@ -19,9 +19,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("commit.tsv", "tilelink.tsv", "control.tsv", "konata.log", "result.tsv")
-PRESETS = ("small", "medium", "large", "mega", "giga")
-# Alternative predictor banks and off-by-default knobs; see boom.sim.SimConfigs.
-EXTRA_CONFIGS = ("tapeout", "alpha21264", "fasttage", "boom2", "knobs")
+PRESETS = ("giga",)
+# Alternative predictor banks and off-by-default knobs removed in giga-only build.
+EXTRA_CONFIGS = ()
 # Same suites/environments/exclusions as RiscvTestsSpec at the reference revision.
 SUITES = ("rv64ui", "rv64um", "rv64ua", "rv64uf", "rv64ud", "rv64uc", "rv64mi", "rv64si", "rv64uzba", "rv64uzbb", "rv64uzbs")
 EXCLUDED = {"rv64ui-p-ma_data", "rv64ui-v-ma_data", "rv64mi-p-instret_overflow"}

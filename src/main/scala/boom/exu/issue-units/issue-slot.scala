@@ -131,9 +131,9 @@ class IssueSlot(val numWakeupPorts: Int, val isMem: Boolean, val isFp: Boolean)(
     next_uop.ppred_busy := False
   }
 
-  val iss_ready  = !slot_uop.prs1_busy && !slot_uop.prs2_busy && !(slot_uop.ppred_busy && Bool(enableSFBOpt)) && !(slot_uop.prs3_busy && Bool(isFp))
-  val agen_ready = (slot_uop.fu_code(FC_AGEN) && !slot_uop.prs1_busy && !(slot_uop.ppred_busy && Bool(enableSFBOpt)) && Bool(isMem))
-  val dgen_ready = (slot_uop.fu_code(FC_DGEN) && !slot_uop.prs2_busy && !(slot_uop.ppred_busy && Bool(enableSFBOpt)) && Bool(isMem))
+  val iss_ready  = !slot_uop.prs1_busy && !slot_uop.prs2_busy && !slot_uop.ppred_busy && !(slot_uop.prs3_busy && Bool(isFp))
+  val agen_ready = (slot_uop.fu_code(FC_AGEN) && !slot_uop.prs1_busy && !slot_uop.ppred_busy && Bool(isMem))
+  val dgen_ready = (slot_uop.fu_code(FC_DGEN) && !slot_uop.prs2_busy && !slot_uop.ppred_busy && Bool(isMem))
 
   io.request := slot_valid && !slot_uop.iw_issued && (
     iss_ready || agen_ready || dgen_ready

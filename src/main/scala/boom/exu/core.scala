@@ -60,7 +60,6 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   with HasFPUParameters
 {
   require(!usingRoCC, "RoCC is not supported by the Spinal port")
-  require(!boomParams.enableTraceCoreIngress, "the trace-core ingress is not ported")
 
   val io = new Bundle {
     val hartid = in UInt(hartIdLen bits)
@@ -92,7 +91,6 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   val unq_exe_units: Seq[UniqueExeUnit] = Seq(
     new UniqueExeUnit(
       hasCSR = true,
-      hasRocc = usingRoCC,
       hasMul = true,
       hasDiv = true,
       hasIfpu = true
@@ -126,23 +124,19 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   val imm_rename_stage  = new ImmRenameStage(coreWidth, numImmReaders) // wakeup ports used when insts read imm
   val rename_stages     = Seq(rename_stage, pred_rename_stage, imm_rename_stage) ++ (if (usingFPU) Seq(fp_rename_stage) else Nil)
 
-  val mem_iss_unit     = IssueUnit(memIssueParam, numIntWakeups, false, false)
-  val unq_iss_unit     = IssueUnit(unqIssueParam, numIntWakeups, false, false)
-  val alu_iss_unit     = IssueUnit(aluIssueParam, numIntWakeups, enableColumnALUIssue, enableALUSingleWideDispatch)
+  val mem_iss_unit     = IssueUnit(memIssueParam, numIntWakeups, false)
+  val unq_iss_unit     = IssueUnit(unqIssueParam, numIntWakeups, false)
+  val alu_iss_unit     = IssueUnit(aluIssueParam, numIntWakeups, true)
   mem_iss_unit.setName("mem_issue_unit")
   unq_iss_unit.setName("unq_issue_unit")
   alu_iss_unit.setName("alu_issue_unit")
   val dispatcher       = new BasicDispatcher
-  val iregfileBankedWriteArray = Seq.fill(lsuWidth + 1) { None } ++ ((0 until aluWidth).map { w => if (enableColumnALUWrites) Some(w) else None })
-  val iregfile         = new BankedRF(
+  val iregfile         = new PartiallyPortedRF(
     UInt(xLen bits),
-    numIrfBanks,
-    numIrfLogicalReadPorts,
     numIntPhysRegs,
     numIrfLogicalReadPorts,
     numIrfReadPorts,
     numIrfWritePorts,
-    iregfileBankedWriteArray,
     "Integer"
   )
   val pregfile         = new FullyPortedRF(
@@ -347,27 +341,6 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   // (only used for printf and vcd dumps - the actual counters are in the CSRFile)
   val debug_tsc_reg = Reg(UInt(xLen bits)) init 0
   val debug_irt_reg = Reg(UInt(xLen bits)) init 0
-  val debug_brs     = RegInit(Vec.fill(5)(U(0, xLen bits)))
-  val debug_jals    = RegInit(Vec.fill(5)(U(0, xLen bits)))
-  val debug_jalrs   = RegInit(Vec.fill(5)(U(0, xLen bits)))
-
-  for (j <- 0 until 5) {
-    debug_brs(j) := debug_brs(j) + PopCount((0 until coreWidth) map {i =>
-      rob.io.commit.arch_valids(i) &&
-      (rob.io.commit.uops(i).debug_fsrc === j) &&
-      rob.io.commit.uops(i).is_br
-    }).resized
-    debug_jals(j) := debug_jals(j) + PopCount((0 until coreWidth) map {i =>
-      rob.io.commit.arch_valids(i) &&
-      (rob.io.commit.uops(i).debug_fsrc === j) &&
-      rob.io.commit.uops(i).is_jal
-    }).resized
-    debug_jalrs(j) := debug_jalrs(j) + PopCount((0 until coreWidth) map {i =>
-      rob.io.commit.arch_valids(i) &&
-      (rob.io.commit.uops(i).debug_fsrc === j) &&
-      rob.io.commit.uops(i).is_jalr
-    }).resized
-  }
 
   debug_tsc_reg := debug_tsc_reg + 1
   debug_irt_reg := debug_irt_reg + PopCount(rob.io.commit.arch_valids).resized
@@ -396,7 +369,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
         "Load/Store Unit Size  : " + numLdqEntries + "/" + numStqEntries,
         "Num Int Phys Registers: " + numIntPhysRegs,
         "Num FP  Phys Registers: " + numFpPhysRegs,
-        "Load-to-use delay     : " + (if (enableFastLoadUse) 4 else 5),
+        "Load-to-use delay     : 5",
         "Max Branch Count      : " + maxBrCount)
     + "\n\n" + iregfile.toString + "\n\n"
     + BoomCoreStringPrefix(
@@ -767,15 +740,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   val dis_prior_slot_unique = (dis_uops zip dis_valids).scanLeft(False) {case (s,(u,v)) => s || v && u.is_unique}
   val wait_for_empty_pipeline = (0 until coreWidth).map(w => (dis_uops(w).is_unique || !custom_csrs.enableOOO) &&
                                   (!rob.io.empty || !io.lsu.fencei_rdy || dis_prior_slot_valid(w)))
-  // No RoCC: io.rocc.busy / the RoCC shim are never busy.
-  val wait_for_rocc = (0 until coreWidth).map(w => False)
-  val dis_rocc_alloc_stall = (0 until coreWidth).map(w => False)
-
-  // Only 1 branch-tag allocating insruction allowed to proceed per cycle unless enableSuperscalarSnapshots
-  // This reduces checkpointing complexity
+  // Only 1 branch-tag allocating instruction allowed to proceed per cycle;
+  // reduces checkpointing complexity.
   val block_brtag = (dis_uops zip dis_valids).map{case (u,v) => v && u.allocate_brtag}.scanLeft(False)(_||_)
-  val brtag_stall = (dis_uops.map(_.allocate_brtag) zip block_brtag) map {case (p,r) =>
-    if (enableSuperscalarSnapshots) False else (p && r) }
+  val brtag_stall = (dis_uops.map(_.allocate_brtag) zip block_brtag) map {case (p,r) => p && r }
   val dis_hazards = (0 until coreWidth).map(w =>
                       dis_valids(w) &&
                       (  !rob.io.ready
@@ -785,9 +753,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
                       || io.lsu.stq_full(w) && dis_uops(w).uses_stq
                       || !dispatcher.io.ren_uops(w).ready
                       || wait_for_empty_pipeline(w)
-                      || wait_for_rocc(w)
                       || dis_prior_slot_unique(w)
-                      || dis_rocc_alloc_stall(w)
                       || brupdate.b1.mispredict_mask =/= 0
                       || brupdate.b2.mispredict
                       || io.ifu.redirect_flush))
@@ -908,8 +874,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
     1 + // Mul
     1 + // F2I
     (if (unq_exe_unit.hasDiv) 1 else 0) +
-    (if (unq_exe_unit.hasCSR) 1 else 0) +
-    (if (unq_exe_unit.hasRocc) 1 else 0))
+    (if (unq_exe_unit.hasCSR) 1 else 0))
 
   var arb_idx = 0
   ll_arb.io.in(arb_idx).valid   := unq_exe_unit.io_mul_resp.get.valid
@@ -924,29 +889,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]] = Nil)(implicit p: Parameters) exte
   if (unq_exe_unit.hasCSR) {
     ll_arb.io.in(arb_idx).valid       := csr_resp.valid
     ll_arb.io.in(arb_idx).payload.uop := csr_resp.payload.uop
-    val rdata = CombInit(csr.io.rw.rdata)
-    if (enableBPDHPMs) {
-      var hpmcounter = CSRs.hpmcounter16
-      var mhpmcounter = CSRs.mhpmcounter16
-      for (i <- 0 until 5) {
-        when (csr.io.rw.addr === hpmcounter || csr.io.rw.addr === mhpmcounter) {
-          rdata := debug_brs(i)
-        }
-        hpmcounter = hpmcounter + 1
-        mhpmcounter = mhpmcounter + 1
-        when (csr.io.rw.addr === hpmcounter || csr.io.rw.addr === mhpmcounter) {
-          rdata := debug_jals(i)
-        }
-        hpmcounter = hpmcounter + 1
-        mhpmcounter = mhpmcounter + 1
-        when (csr.io.rw.addr === hpmcounter || csr.io.rw.addr === mhpmcounter) {
-          rdata := debug_jalrs(i)
-        }
-        hpmcounter = hpmcounter + 1
-        mhpmcounter = mhpmcounter + 1
-      }
-    }
-    ll_arb.io.in(arb_idx).payload.data := rdata
+    ll_arb.io.in(arb_idx).payload.data := csr.io.rw.rdata
     ll_arb.io.in(arb_idx).payload.predicated     := False
     ll_arb.io.in(arb_idx).payload.fflags.valid   := False
     ll_arb.io.in(arb_idx).payload.fflags.payload := 0

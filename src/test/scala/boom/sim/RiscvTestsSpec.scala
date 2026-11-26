@@ -3,7 +3,7 @@ package boom.sim
 import org.scalatest.funsuite.AnyFunSuite
 
 /**
- * riscv-tests ISA suite ("p" and "v" environments) on BOOM (small by default).
+ * riscv-tests ISA suite ("p" and "v" environments) on BOOM (giga by default).
  * Set RISCV_TESTS to the directory holding the built isa/ binaries.
  */
 class RiscvTestsSpec extends AnyFunSuite {
@@ -21,9 +21,8 @@ class RiscvTestsSpec extends AnyFunSuite {
   // commits (one cycle later still), so it reads back 1: upstream BOOM behaviour.
   val excluded = Set("rv64ui-p-ma_data", "rv64ui-v-ma_data", "rv64mi-p-instret_overflow")
 
-  // RISCV_TESTS_CONFIG selects the core config: a preset (small/medium/large/mega/giga)
-  // or an extra config from SimConfigs (tapeout/alpha21264/fasttage/boom2/knobs).
-  val configName = sys.env.getOrElse("RISCV_TESTS_CONFIG", "small")
+  // RISCV_TESTS_CONFIG selects the core config (giga only).
+  val configName = sys.env.getOrElse("RISCV_TESTS_CONFIG", "giga")
   val tileConfig = SimConfigs(configName)
   // RISCV_TESTS_RVFI enables the RVFI port and checks it with riscv-formal's monitor.
   lazy val compiled = BoomSim.compile(tileConfig, configName, wave = sys.env.contains("RISCV_TESTS_WAVE"),

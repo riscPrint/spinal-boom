@@ -5,7 +5,7 @@ package boom.sim
  *
  *   sbt "Test/runMain boom.sim.KonataTrace <elf> [out.log]"
  *
- * Env: KONATA_CONFIG (small/medium/large/mega/giga, default small), KONATA_MAX_CYCLES
+ * Env: KONATA_CONFIG (giga, default giga), KONATA_MAX_CYCLES
  * (default 200000), KONATA_SEED (default 1), KONATA_VERBOSE (print the commit trace). The log defaults to konata/<elf name>.log.
  */
 object KonataTrace {
@@ -13,14 +13,8 @@ object KonataTrace {
     require(args.nonEmpty, "usage: KonataTrace <elf> [out.log]")
     val elf = args(0)
     val out = new java.io.File(if (args.length > 1) args(1) else s"konata/${new java.io.File(elf).getName}.log")
-    val configName = sys.env.getOrElse("KONATA_CONFIG", "small")
-    val tile = configName match {
-      case "small" => boom.common.BoomConfigs.small()
-      case "medium" => boom.common.BoomConfigs.medium()
-      case "large" => boom.common.BoomConfigs.large()
-      case "mega" => boom.common.BoomConfigs.mega()
-      case "giga" => boom.common.BoomConfigs.giga()
-    }
+    val configName = sys.env.getOrElse("KONATA_CONFIG", "giga")
+    val tile = boom.common.BoomConfigs.named(configName)
     val compiled = BoomSim.compile(tile, configName, konata = true)
     val r = BoomSim.run(compiled, elf, konata = Some(out), verbose = sys.env.contains("KONATA_VERBOSE"),
       seed = sys.env.get("KONATA_SEED").map(_.toInt).getOrElse(1),

@@ -9,7 +9,7 @@ import org.scalatest.funsuite.AnyFunSuite
  */
 class VmTestsSpec extends AnyFunSuite {
   val testDir = new java.io.File("tests/vm/build")
-  val configName = sys.env.getOrElse("VM_TESTS_CONFIG", "small")
+  val configName = sys.env.getOrElse("VM_TESTS_CONFIG", "giga")
   lazy val compiled = BoomSim.compile(boom.common.BoomConfigs.named(configName), configName)
 
   for (t <- Option(testDir.listFiles()).toSeq.flatten.map(_.getName).sorted) test(t) {

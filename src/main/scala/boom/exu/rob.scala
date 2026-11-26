@@ -710,37 +710,25 @@ class Rob(
   // Makes 'older than' comparisons ~3x cheaper, in case we're going to use the PNR to do a large number of those.
   // Also doesn't require the rob tail (or head) to be exported to whatever we want to compare with the PNR.
 
-  if (enableFastPNR) {
-    val unsafe_entry_in_rob = rob_unsafe_masked.reduce(_||_)
-    val tail_pnr = ((rob_tail << log2Ceil(coreWidth)) | PriorityEncoder(~rob_tail_vals.asUInt).resized)
-    val pw = rob_head_idx.getWidth max tail_pnr.getWidth
-    val next_rob_pnr_idx = Mux(unsafe_entry_in_rob,
-                               AgePriorityEncoder(rob_unsafe_masked, rob_head_idx).resize(pw),
-                               tail_pnr.resize(pw))
-    rob_pnr := (next_rob_pnr_idx >> log2Ceil(coreWidth)).resized
-    if (coreWidth > 1)
-      rob_pnr_lsb := next_rob_pnr_idx(log2Ceil(coreWidth)-1 downto 0)
-  } else {
-    val safe_to_inc = rob_state === s_normal || rob_state === s_wait_till_empty
-    val do_inc_row = !rob_pnr_unsafe.reduce(_||_) && !(rob_pnr === rob_tail && !io.brupdate.b2.mispredict)
-    when (rob_state === s_rollback) {
-      assert(rob_pnr === rob_head)
-      rob_pnr_lsb := 0
-    } elsewhen (empty && io.enq_valids.asUInt =/= 0) {
-      // Unforunately for us, the ROB does not use its entries in monotonically
-      //  increasing order, even in the case of no exceptions. The edge case
-      //  arises when partial rows are enqueued and committed, leaving an empty
-      //  ROB.
-      rob_pnr     := rob_head
-      rob_pnr_lsb := PriorityEncoder(io.enq_valids).resized
-    } elsewhen (safe_to_inc && do_inc_row) {
-      rob_pnr     := WrapInc(rob_pnr, numRobRows)
-      rob_pnr_lsb := 0
-    } elsewhen (safe_to_inc && (rob_pnr =/= rob_tail)) {
-      rob_pnr_lsb := PriorityEncoder(rob_pnr_unsafe).resized
-    } elsewhen (safe_to_inc && !full && !empty) {
-      rob_pnr_lsb := PriorityEncoder(rob_pnr_unsafe.asUInt | ~MaskLower(rob_tail_vals.asUInt)).resized
-    }
+  val safe_to_inc = rob_state === s_normal || rob_state === s_wait_till_empty
+  val do_inc_row = !rob_pnr_unsafe.reduce(_||_) && !(rob_pnr === rob_tail && !io.brupdate.b2.mispredict)
+  when (rob_state === s_rollback) {
+    assert(rob_pnr === rob_head)
+    rob_pnr_lsb := 0
+  } elsewhen (empty && io.enq_valids.asUInt =/= 0) {
+    // Unforunately for us, the ROB does not use its entries in monotonically
+    //  increasing order, even in the case of no exceptions. The edge case
+    //  arises when partial rows are enqueued and committed, leaving an empty
+    //  ROB.
+    rob_pnr     := rob_head
+    rob_pnr_lsb := PriorityEncoder(io.enq_valids).resized
+  } elsewhen (safe_to_inc && do_inc_row) {
+    rob_pnr     := WrapInc(rob_pnr, numRobRows)
+    rob_pnr_lsb := 0
+  } elsewhen (safe_to_inc && (rob_pnr =/= rob_tail)) {
+    rob_pnr_lsb := PriorityEncoder(rob_pnr_unsafe).resized
+  } elsewhen (safe_to_inc && !full && !empty) {
+    rob_pnr_lsb := PriorityEncoder(rob_pnr_unsafe.asUInt | ~MaskLower(rob_tail_vals.asUInt)).resized
   }
 
   // Head overrunning PNR likely means an entry hasn't been marked as safe when it should have been.
