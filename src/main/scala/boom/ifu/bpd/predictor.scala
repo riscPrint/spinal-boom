@@ -32,7 +32,6 @@ class BranchPredictionBundle(implicit p: Parameters) extends BoomBundle()(p)
   val pc = UInt(vaddrBitsExtended bits)
   val preds = Vec.fill(fetchWidth)(new BranchPrediction)
   val meta = Vec.fill(nBanks)(UInt(bpdMaxMetaLength bits))
-  val lhist = Vec.fill(nBanks)(UInt(localHistoryLength bits))
 }
 
 // A branch update for a fetch-width worth of instructions
@@ -67,7 +66,6 @@ class BranchPredictionUpdate(implicit p: Parameters) extends BoomBundle()(p)
   //val cfi_is_ret  = Bool()
 
   val ghist = new GlobalHistory
-  val lhist = Vec.fill(nBanks)(UInt(localHistoryLength bits))
 
   // What did this CFI jump to?
   val target        = UInt(vaddrBitsExtended bits)
@@ -99,7 +97,6 @@ class BranchPredictionBankUpdate(implicit p: Parameters) extends BoomBundle()(p)
   val cfi_is_jalr      = Bool()
 
   val ghist            = UInt(globalHistoryLength bits)
-  val lhist            = UInt(localHistoryLength bits)
 
   val target           = UInt(vaddrBitsExtended bits)
 
@@ -132,9 +129,7 @@ abstract class BranchPredictorBank(implicit p: Parameters) extends BoomModule()(
     val f0_valid = in Bool()
     val f0_pc    = in UInt(vaddrBitsExtended bits)
     val f0_mask  = in UInt(bankWidth bits)
-    // Local history not available until end of f1
     val f1_ghist = in UInt(globalHistoryLength bits)
-    val f1_lhist = in UInt(localHistoryLength bits)
 
     val resp_in = in(Vec.fill(nInputs)(new BranchPredictionBankResponse))
     val resp = out(new BranchPredictionBankResponse)
@@ -204,7 +199,7 @@ abstract class BranchPredictorBank(implicit p: Parameters) extends BoomModule()(
   /** Every predictor's inputs default to don't-care (BOOM's `preds.map(_.io := DontCare)`). */
   def defaultInputs(): Unit = {
     io.f0_valid.assignDontCare(); io.f0_pc.assignDontCare(); io.f0_mask.assignDontCare()
-    io.f1_ghist.assignDontCare(); io.f1_lhist.assignDontCare(); io.resp_in.assignDontCare()
+    io.f1_ghist.assignDontCare(); io.resp_in.assignDontCare()
     io.f3_fire.assignDontCare(); io.update.assignDontCare()
   }
 }
@@ -233,7 +228,7 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   val bpdStr = new StringBuilder
   bpdStr.append(BoomCoreStringPrefix("==Branch Predictor Memory Sizes==\n"))
   val banked_predictors = (0 until nBanks) map ( b => {
-    val m = if (useBPD) new ComposedBranchPredictorBank else new NullBranchPredictorBank
+    val m = new ComposedBranchPredictorBank
     for ((n, d, w) <- m.mems) {
       bpdStr.append(BoomCoreStringPrefix(f"bank$b $n: $d x $w = ${d * w / 8}"))
       total_memsize = total_memsize + d * w / 8
@@ -247,116 +242,61 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   val responseAges = Vector.fill(4)(Node())
   val RESPONSE_PC = responseAges(0).insert(io.f0_req.payload.pc)
 
-  val banked_lhist_providers = Seq.fill(nBanks) { if (localHistoryNSets > 0) new LocalBranchPredictorBank else new NullLocalBranchPredictorBank }
+  require(nBanks == 2)
 
-  if (nBanks == 1) {
-    banked_lhist_providers(0).io.f0_valid := io.f0_req.valid
-    banked_lhist_providers(0).io.f0_pc    := bankAlign(io.f0_req.payload.pc)
+  banked_predictors(0).io.resp_in(0) := new BranchPredictionBankResponse().getZero
+  banked_predictors(1).io.resp_in(0) := new BranchPredictionBankResponse().getZero
 
+  when (bank(io.f0_req.payload.pc) === 0) {
     banked_predictors(0).io.f0_valid := io.f0_req.valid
     banked_predictors(0).io.f0_pc    := io.f0_req.payload.pc
     banked_predictors(0).io.f0_mask  := fetchMask(io.f0_req.payload.pc).resized
 
-    banked_predictors(0).io.f1_ghist := responseAges(1)(responseAges(0).insert(io.f0_req.payload.ghist.histories(0)))
-    banked_predictors(0).io.f1_lhist := banked_lhist_providers(0).io.f1_lhist
+    banked_predictors(1).io.f0_valid := io.f0_req.valid
+    banked_predictors(1).io.f0_pc    := nextBank(io.f0_req.payload.pc)
+    banked_predictors(1).io.f0_mask  := ~U(0, bankWidth bits)
+  } otherwise {
+    banked_predictors(0).io.f0_valid := io.f0_req.valid && !mayNotBeDualBanked(io.f0_req.payload.pc)
+    banked_predictors(0).io.f0_pc    := nextBank(io.f0_req.payload.pc)
+    banked_predictors(0).io.f0_mask  := ~U(0, bankWidth bits)
 
-    banked_predictors(0).io.resp_in(0) := new BranchPredictionBankResponse().getZero
-  } else {
-    require(nBanks == 2)
-
-    banked_predictors(0).io.resp_in(0) := new BranchPredictionBankResponse().getZero
-    banked_predictors(1).io.resp_in(0) := new BranchPredictionBankResponse().getZero
-
-    banked_predictors(0).io.f1_lhist := banked_lhist_providers(0).io.f1_lhist
-    banked_predictors(1).io.f1_lhist := banked_lhist_providers(1).io.f1_lhist
-
-    when (bank(io.f0_req.payload.pc) === 0) {
-      banked_lhist_providers(0).io.f0_valid := io.f0_req.valid
-      banked_lhist_providers(0).io.f0_pc    := bankAlign(io.f0_req.payload.pc)
-
-      banked_lhist_providers(1).io.f0_valid := io.f0_req.valid
-      banked_lhist_providers(1).io.f0_pc    := nextBank(io.f0_req.payload.pc)
-
-      banked_predictors(0).io.f0_valid := io.f0_req.valid
-      banked_predictors(0).io.f0_pc    := io.f0_req.payload.pc
-      banked_predictors(0).io.f0_mask  := fetchMask(io.f0_req.payload.pc).resized
-
-      banked_predictors(1).io.f0_valid := io.f0_req.valid
-      banked_predictors(1).io.f0_pc    := nextBank(io.f0_req.payload.pc)
-      banked_predictors(1).io.f0_mask  := ~U(0, bankWidth bits)
-    } otherwise {
-      banked_lhist_providers(0).io.f0_valid := io.f0_req.valid && !mayNotBeDualBanked(io.f0_req.payload.pc)
-      banked_lhist_providers(0).io.f0_pc    := nextBank(io.f0_req.payload.pc)
-
-      banked_lhist_providers(1).io.f0_valid := io.f0_req.valid
-      banked_lhist_providers(1).io.f0_pc    := bankAlign(io.f0_req.payload.pc)
-
-      banked_predictors(0).io.f0_valid := io.f0_req.valid && !mayNotBeDualBanked(io.f0_req.payload.pc)
-      banked_predictors(0).io.f0_pc    := nextBank(io.f0_req.payload.pc)
-      banked_predictors(0).io.f0_mask  := ~U(0, bankWidth bits)
-
-      banked_predictors(1).io.f0_valid := io.f0_req.valid
-      banked_predictors(1).io.f0_pc    := io.f0_req.payload.pc
-      banked_predictors(1).io.f0_mask  := fetchMask(io.f0_req.payload.pc).resized
-    }
-    val BANK0 = responseAges(0).insert(bank(io.f0_req.payload.pc) === 0)
-    // Both F0 histories ride the response ages; the F1 bank selects them.
-    val f1_histories = (0 until 2).map(i =>
-      responseAges(1)(responseAges(0).insert(io.f0_req.payload.ghist.histories(i))))
-    when (responseAges(1)(BANK0)) {
-      banked_predictors(0).io.f1_ghist  := f1_histories(0)
-      banked_predictors(1).io.f1_ghist  := f1_histories(1)
-    } otherwise {
-      banked_predictors(0).io.f1_ghist  := f1_histories(1)
-      banked_predictors(1).io.f1_ghist  := f1_histories(0)
-    }
+    banked_predictors(1).io.f0_valid := io.f0_req.valid
+    banked_predictors(1).io.f0_pc    := io.f0_req.payload.pc
+    banked_predictors(1).io.f0_mask  := fetchMask(io.f0_req.payload.pc).resized
+  }
+  val BANK0 = responseAges(0).insert(bank(io.f0_req.payload.pc) === 0)
+  // Both F0 histories ride the response ages; the F1 bank selects them.
+  val f1_histories = (0 until 2).map(i =>
+    responseAges(1)(responseAges(0).insert(io.f0_req.payload.ghist.histories(i))))
+  when (responseAges(1)(BANK0)) {
+    banked_predictors(0).io.f1_ghist  := f1_histories(0)
+    banked_predictors(1).io.f1_ghist  := f1_histories(1)
+  } otherwise {
+    banked_predictors(0).io.f1_ghist  := f1_histories(1)
+    banked_predictors(1).io.f1_ghist  := f1_histories(0)
   }
 
-  for (i <- 0 until nBanks) {
-    banked_lhist_providers(i).io.f3_taken_br := banked_predictors(i).io.resp.f3.map ( p =>
-      p.is_br && p.predicted_pc.valid && p.taken
-    ).reduce(_||_)
-  }
+  val b0_fire = io.f3_fire && responseAges(3)(responseAges(0).insert(banked_predictors(0).io.f0_valid))
+  val b1_fire = io.f3_fire && responseAges(3)(responseAges(0).insert(banked_predictors(1).io.f0_valid))
+  banked_predictors(0).io.f3_fire := b0_fire
+  banked_predictors(1).io.f3_fire := b1_fire
 
-  if (nBanks == 1) {
-    io.resp.f1.preds    := banked_predictors(0).io.resp.f1
-    io.resp.f2.preds    := banked_predictors(0).io.resp.f2
-    io.resp.f3.preds    := banked_predictors(0).io.resp.f3
-    io.resp.f3.meta(0)  := banked_predictors(0).io.f3_meta
-    io.resp.f3.lhist(0) := banked_lhist_providers(0).io.f3_lhist
+  // The branch prediction metadata is stored un-shuffled
+  io.resp.f3.meta(0) := banked_predictors(0).io.f3_meta
+  io.resp.f3.meta(1) := banked_predictors(1).io.f3_meta
 
-    banked_predictors(0).io.f3_fire := io.f3_fire
-    banked_lhist_providers(0).io.f3_fire := io.f3_fire
-  } else {
-    require(nBanks == 2)
-    val b0_fire = io.f3_fire && responseAges(3)(responseAges(0).insert(banked_predictors(0).io.f0_valid))
-    val b1_fire = io.f3_fire && responseAges(3)(responseAges(0).insert(banked_predictors(1).io.f0_valid))
-    banked_predictors(0).io.f3_fire := b0_fire
-    banked_predictors(1).io.f3_fire := b1_fire
-
-    banked_lhist_providers(0).io.f3_fire := b0_fire
-    banked_lhist_providers(1).io.f3_fire := b1_fire
-
-    // The branch prediction metadata is stored un-shuffled
-    io.resp.f3.meta(0)    := banked_predictors(0).io.f3_meta
-    io.resp.f3.meta(1)    := banked_predictors(1).io.f3_meta
-
-    io.resp.f3.lhist(0)   := banked_lhist_providers(0).io.f3_lhist
-    io.resp.f3.lhist(1)   := banked_lhist_providers(1).io.f3_lhist
-
-    for ((r, bp) <- Seq((io.resp.f1, banked_predictors.map(_.io.resp.f1)),
-                        (io.resp.f2, banked_predictors.map(_.io.resp.f2)),
-                        (io.resp.f3, banked_predictors.map(_.io.resp.f3)))) {
-      when (bank(r.pc) === 0) {
-        for (i <- 0 until bankWidth) {
-          r.preds(i)           := bp(0)(i)
-          r.preds(i+bankWidth) := bp(1)(i)
-        }
-      } otherwise {
-        for (i <- 0 until bankWidth) {
-          r.preds(i)           := bp(1)(i)
-          r.preds(i+bankWidth) := bp(0)(i)
-        }
+  for ((r, bp) <- Seq((io.resp.f1, banked_predictors.map(_.io.resp.f1)),
+                      (io.resp.f2, banked_predictors.map(_.io.resp.f2)),
+                      (io.resp.f3, banked_predictors.map(_.io.resp.f3)))) {
+    when (bank(r.pc) === 0) {
+      for (i <- 0 until bankWidth) {
+        r.preds(i)           := bp(0)(i)
+        r.preds(i+bankWidth) := bp(1)(i)
+      }
+    } otherwise {
+      for (i <- 0 until bankWidth) {
+        r.preds(i)           := bp(1)(i)
+        r.preds(i+bankWidth) := bp(0)(i)
       }
     }
   }
@@ -369,15 +309,12 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   // Use the meta from the latest resp
   io.resp.f1.meta.assignDontCare()
   io.resp.f2.meta.assignDontCare()
-  io.resp.f1.lhist.assignDontCare()
-  io.resp.f2.lhist.assignDontCare()
 
   for (i <- 0 until nBanks) {
     banked_predictors(i).io.update.payload.is_mispredict_update := io.update.payload.is_mispredict_update
     banked_predictors(i).io.update.payload.is_repair_update     := io.update.payload.is_repair_update
 
     banked_predictors(i).io.update.payload.meta             := io.update.payload.meta(i)
-    banked_predictors(i).io.update.payload.lhist            := io.update.payload.lhist(i)
     banked_predictors(i).io.update.payload.cfi_idx.payload  := io.update.payload.cfi_idx.payload.resized
     banked_predictors(i).io.update.payload.cfi_taken        := io.update.payload.cfi_taken
     banked_predictors(i).io.update.payload.cfi_mispredicted := io.update.payload.cfi_mispredicted
@@ -385,82 +322,52 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
     banked_predictors(i).io.update.payload.cfi_is_jal       := io.update.payload.cfi_is_jal
     banked_predictors(i).io.update.payload.cfi_is_jalr      := io.update.payload.cfi_is_jalr
     banked_predictors(i).io.update.payload.target           := io.update.payload.target
-
-    banked_lhist_providers(i).io.update.mispredict := io.update.payload.is_mispredict_update
-    banked_lhist_providers(i).io.update.repair     := io.update.payload.is_repair_update
-    banked_lhist_providers(i).io.update.lhist      := io.update.payload.lhist(i)
   }
 
-  if (nBanks == 1) {
-    banked_predictors(0).io.update.valid                    := io.update.valid
-    banked_predictors(0).io.update.payload.pc               := io.update.payload.pc
-    banked_predictors(0).io.update.payload.br_mask          := io.update.payload.br_mask
-    banked_predictors(0).io.update.payload.btb_mispredicts  := io.update.payload.btb_mispredicts
-    banked_predictors(0).io.update.payload.cfi_idx.valid    := io.update.payload.cfi_idx.valid
-    banked_predictors(0).io.update.payload.ghist            := io.update.payload.ghist.histories(0)
+  // Split the single update bundle for the fetchpacket into two updates
+  // 1 for each bank.
+  when (bank(io.update.payload.pc) === 0) {
+    val b1_update_valid = io.update.valid &&
+      (!io.update.payload.cfi_idx.valid || io.update.payload.cfi_idx.payload >= bankWidth)
 
-    banked_lhist_providers(0).io.update.valid := io.update.valid && io.update.payload.br_mask =/= 0
-    banked_lhist_providers(0).io.update.pc    := bankAlign(io.update.payload.pc)
-  } else {
-    require(nBanks == 2)
-    // Split the single update bundle for the fetchpacket into two updates
-    // 1 for each bank.
+    banked_predictors(0).io.update.valid := io.update.valid
+    banked_predictors(1).io.update.valid := b1_update_valid
 
-    when (bank(io.update.payload.pc) === 0) {
-      val b1_update_valid = io.update.valid &&
-        (!io.update.payload.cfi_idx.valid || io.update.payload.cfi_idx.payload >= bankWidth)
+    banked_predictors(0).io.update.payload.pc := io.update.payload.pc
+    banked_predictors(1).io.update.payload.pc := nextBank(io.update.payload.pc)
 
-      banked_lhist_providers(0).io.update.valid := io.update.valid && io.update.payload.br_mask(bankWidth-1 downto 0) =/= 0
-      banked_lhist_providers(1).io.update.valid := b1_update_valid && io.update.payload.br_mask(fetchWidth-1 downto bankWidth) =/= 0
+    banked_predictors(0).io.update.payload.br_mask := io.update.payload.br_mask.resized
+    banked_predictors(1).io.update.payload.br_mask := (io.update.payload.br_mask >> bankWidth).resized
 
-      banked_lhist_providers(0).io.update.pc := bankAlign(io.update.payload.pc)
-      banked_lhist_providers(1).io.update.pc := nextBank(io.update.payload.pc)
+    banked_predictors(0).io.update.payload.btb_mispredicts  := io.update.payload.btb_mispredicts.resized
+    banked_predictors(1).io.update.payload.btb_mispredicts  := (io.update.payload.btb_mispredicts >> bankWidth).resized
 
-      banked_predictors(0).io.update.valid := io.update.valid
-      banked_predictors(1).io.update.valid := b1_update_valid
+    banked_predictors(0).io.update.payload.cfi_idx.valid := io.update.payload.cfi_idx.valid && io.update.payload.cfi_idx.payload < bankWidth
+    banked_predictors(1).io.update.payload.cfi_idx.valid := io.update.payload.cfi_idx.valid && io.update.payload.cfi_idx.payload >= bankWidth
 
-      banked_predictors(0).io.update.payload.pc := io.update.payload.pc
-      banked_predictors(1).io.update.payload.pc := nextBank(io.update.payload.pc)
+    banked_predictors(0).io.update.payload.ghist := io.update.payload.ghist.histories(0)
+    banked_predictors(1).io.update.payload.ghist := io.update.payload.ghist.histories(1)
+  } otherwise {
+    val b0_update_valid = io.update.valid && !mayNotBeDualBanked(io.update.payload.pc) &&
+      (!io.update.payload.cfi_idx.valid || io.update.payload.cfi_idx.payload >= bankWidth)
 
-      banked_predictors(0).io.update.payload.br_mask := io.update.payload.br_mask.resized
-      banked_predictors(1).io.update.payload.br_mask := (io.update.payload.br_mask >> bankWidth).resized
+    banked_predictors(1).io.update.valid := io.update.valid
+    banked_predictors(0).io.update.valid := b0_update_valid
 
-      banked_predictors(0).io.update.payload.btb_mispredicts  := io.update.payload.btb_mispredicts.resized
-      banked_predictors(1).io.update.payload.btb_mispredicts  := (io.update.payload.btb_mispredicts >> bankWidth).resized
+    banked_predictors(1).io.update.payload.pc := io.update.payload.pc
+    banked_predictors(0).io.update.payload.pc := nextBank(io.update.payload.pc)
 
-      banked_predictors(0).io.update.payload.cfi_idx.valid := io.update.payload.cfi_idx.valid && io.update.payload.cfi_idx.payload < bankWidth
-      banked_predictors(1).io.update.payload.cfi_idx.valid := io.update.payload.cfi_idx.valid && io.update.payload.cfi_idx.payload >= bankWidth
+    banked_predictors(1).io.update.payload.br_mask := io.update.payload.br_mask.resized
+    banked_predictors(0).io.update.payload.br_mask := (io.update.payload.br_mask >> bankWidth).resized
 
-      banked_predictors(0).io.update.payload.ghist := io.update.payload.ghist.histories(0)
-      banked_predictors(1).io.update.payload.ghist := io.update.payload.ghist.histories(1)
-    } otherwise {
-      val b0_update_valid = io.update.valid && !mayNotBeDualBanked(io.update.payload.pc) &&
-        (!io.update.payload.cfi_idx.valid || io.update.payload.cfi_idx.payload >= bankWidth)
+    banked_predictors(1).io.update.payload.btb_mispredicts  := io.update.payload.btb_mispredicts.resized
+    banked_predictors(0).io.update.payload.btb_mispredicts  := (io.update.payload.btb_mispredicts >> bankWidth).resized
 
-      banked_lhist_providers(1).io.update.valid := io.update.valid && io.update.payload.br_mask(bankWidth-1 downto 0) =/= 0
-      banked_lhist_providers(0).io.update.valid := b0_update_valid && io.update.payload.br_mask(fetchWidth-1 downto bankWidth) =/= 0
+    banked_predictors(1).io.update.payload.cfi_idx.valid := io.update.payload.cfi_idx.valid && io.update.payload.cfi_idx.payload < bankWidth
+    banked_predictors(0).io.update.payload.cfi_idx.valid := io.update.payload.cfi_idx.valid && io.update.payload.cfi_idx.payload >= bankWidth
 
-      banked_lhist_providers(1).io.update.pc := bankAlign(io.update.payload.pc)
-      banked_lhist_providers(0).io.update.pc := nextBank(io.update.payload.pc)
-
-      banked_predictors(1).io.update.valid := io.update.valid
-      banked_predictors(0).io.update.valid := b0_update_valid
-
-      banked_predictors(1).io.update.payload.pc := io.update.payload.pc
-      banked_predictors(0).io.update.payload.pc := nextBank(io.update.payload.pc)
-
-      banked_predictors(1).io.update.payload.br_mask := io.update.payload.br_mask.resized
-      banked_predictors(0).io.update.payload.br_mask := (io.update.payload.br_mask >> bankWidth).resized
-
-      banked_predictors(1).io.update.payload.btb_mispredicts  := io.update.payload.btb_mispredicts.resized
-      banked_predictors(0).io.update.payload.btb_mispredicts  := (io.update.payload.btb_mispredicts >> bankWidth).resized
-
-      banked_predictors(1).io.update.payload.cfi_idx.valid := io.update.payload.cfi_idx.valid && io.update.payload.cfi_idx.payload < bankWidth
-      banked_predictors(0).io.update.payload.cfi_idx.valid := io.update.payload.cfi_idx.valid && io.update.payload.cfi_idx.payload >= bankWidth
-
-      banked_predictors(1).io.update.payload.ghist := io.update.payload.ghist.histories(0)
-      banked_predictors(0).io.update.payload.ghist := io.update.payload.ghist.histories(1)
-    }
+    banked_predictors(1).io.update.payload.ghist := io.update.payload.ghist.histories(0)
+    banked_predictors(0).io.update.payload.ghist := io.update.payload.ghist.histories(1)
   }
 
   when (io.update.valid) {
@@ -470,10 +377,6 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   }
   Builder((0 until 3).map(i => StageLink(responseAges(i), responseAges(i + 1))))
 
-}
-
-class NullBranchPredictorBank(implicit p: Parameters) extends BranchPredictorBank()(p) {
-  val mems = Nil
 }
 
 class ComposedBranchPredictorBank(implicit p: Parameters) extends BranchPredictorBank()(p)
@@ -488,7 +391,6 @@ class ComposedBranchPredictorBank(implicit p: Parameters) extends BranchPredicto
     c.io.f0_pc     := io.f0_pc
     c.io.f0_mask   := io.f0_mask
     c.io.f1_ghist  := io.f1_ghist
-    c.io.f1_lhist  := io.f1_lhist
     c.io.f3_fire   := io.f3_fire
     if (c.metaSz > 0) {
       metas = (metas << c.metaSz) | c.io.f3_meta(c.metaSz-1 downto 0).resize(metas.getWidth + c.metaSz)

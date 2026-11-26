@@ -37,17 +37,13 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
   val ras_idx = UInt(log2Ceil(nRasEntries) bits)
 
   def histories(bank: Int): UInt = {
-    if (nBanks == 1) {
+    require(nBanks == 2)
+    if (bank == 0) {
       old_history
     } else {
-      require(nBanks == 2)
-      if (bank == 0) {
-        old_history
-      } else {
-        Mux(new_saw_branch_taken    , (old_history << 1).resize(globalHistoryLength) | 1,
-        Mux(new_saw_branch_not_taken, (old_history << 1).resize(globalHistoryLength),
-                                      old_history))
-      }
+      Mux(new_saw_branch_taken    , (old_history << 1).resize(globalHistoryLength) | 1,
+      Mux(new_saw_branch_not_taken, (old_history << 1).resize(globalHistoryLength),
+                                    old_history))
     }
   }
 
@@ -71,34 +67,24 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
                                             MaskLower(cfi_idx_oh) & ~Mux(cfi_is_br && cfi_taken, cfi_idx_oh, zeroF),
                                             ~zeroF)
 
-    if (nBanks == 1) {
-      // In the single bank case every bank sees the history including the previous bank
-      new_history.assignDontCare()
-      new_history.current_saw_branch_not_taken := False
-      val saw_not_taken_branch = not_taken_branches =/= 0 || current_saw_branch_not_taken
-      new_history.old_history := Mux(cfi_is_br && cfi_taken && cfi_valid, (histories(0) << 1).resize(globalHistoryLength) | 1,
-                                 Mux(saw_not_taken_branch               , (histories(0) << 1).resize(globalHistoryLength),
-                                                                          histories(0)))
-    } else {
-      // In the two bank case every bank ignore the history added by the previous bank
-      val base = histories(1)
-      val cfi_in_bank_0 = cfi_valid && cfi_taken && cfi_idx_fixed < bankWidth
-      val ignore_second_bank = cfi_in_bank_0 || mayNotBeDualBanked(addr)
+    // In the two bank case every bank ignore the history added by the previous bank
+    val base = histories(1)
+    val cfi_in_bank_0 = cfi_valid && cfi_taken && cfi_idx_fixed < bankWidth
+    val ignore_second_bank = cfi_in_bank_0 || mayNotBeDualBanked(addr)
 
-      val first_bank_saw_not_taken = not_taken_branches(bankWidth - 1 downto 0) =/= 0 || current_saw_branch_not_taken
-      new_history.current_saw_branch_not_taken := False
-      when(ignore_second_bank) {
-        new_history.old_history := histories(1)
-        new_history.new_saw_branch_not_taken := first_bank_saw_not_taken
-        new_history.new_saw_branch_taken     := cfi_is_br && cfi_in_bank_0
-      } otherwise {
-        new_history.old_history := Mux(cfi_is_br && cfi_in_bank_0, (histories(1) << 1).resize(globalHistoryLength) | 1,
-                                   Mux(first_bank_saw_not_taken    , (histories(1) << 1).resize(globalHistoryLength),
-                                                                     histories(1)))
+    val first_bank_saw_not_taken = not_taken_branches(bankWidth - 1 downto 0) =/= 0 || current_saw_branch_not_taken
+    new_history.current_saw_branch_not_taken := False
+    when(ignore_second_bank) {
+      new_history.old_history := histories(1)
+      new_history.new_saw_branch_not_taken := first_bank_saw_not_taken
+      new_history.new_saw_branch_taken     := cfi_is_br && cfi_in_bank_0
+    } otherwise {
+      new_history.old_history := Mux(cfi_is_br && cfi_in_bank_0, (histories(1) << 1).resize(globalHistoryLength) | 1,
+                                 Mux(first_bank_saw_not_taken    , (histories(1) << 1).resize(globalHistoryLength),
+                                                                   histories(1)))
 
-        new_history.new_saw_branch_not_taken := not_taken_branches(fetchWidth - 1 downto bankWidth) =/= 0
-        new_history.new_saw_branch_taken     := cfi_valid && cfi_taken && cfi_is_br && !cfi_in_bank_0
-      }
+      new_history.new_saw_branch_not_taken := not_taken_branches(fetchWidth - 1 downto bankWidth) =/= 0
+      new_history.new_saw_branch_taken     := cfi_valid && cfi_taken && cfi_is_br && !cfi_in_bank_0
     }
     new_history.ras_idx := Mux(cfi_valid && cfi_is_call, WrapInc(ras_idx, nRasEntries),
                            Mux(cfi_valid && cfi_is_ret , WrapDec(ras_idx, nRasEntries), ras_idx))
@@ -112,26 +98,22 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
 trait HasBoomFrontendParameters extends HasL1ICacheParameters
 {
   // How many banks does the ICache use?
-  val nBanks = if (cacheParams.fetchBytes <= 8) 1 else 2
+  require(cacheParams.fetchBytes > 8)
+  val nBanks = 2
   // How many bytes wide is a bank?
   val bankBytes = fetchBytes / nBanks
 
   val bankWidth = fetchWidth / nBanks
 
-  require(nBanks == 1 || nBanks == 2)
-
   // How many "chunks"/interleavings make up a cache line?
   val numChunks = cacheParams.blockBytes / bankBytes
 
   // Which bank is the address pointing to?
-  def bank(addr: UInt): UInt = if (nBanks == 2) addr(log2Ceil(bankBytes)).asUInt else U(0, 1 bits)
+  def bank(addr: UInt): UInt = addr(log2Ceil(bankBytes)).asUInt
   def isLastBankInBlock(addr: UInt): Bool = {
-    Bool(nBanks == 2) && addr(blockOffBits - 1 downto log2Ceil(bankBytes)) === (numChunks - 1)
+    addr(blockOffBits - 1 downto log2Ceil(bankBytes)) === (numChunks - 1)
   }
-  def mayNotBeDualBanked(addr: UInt): Bool = {
-    require(nBanks == 2)
-    isLastBankInBlock(addr)
-  }
+  def mayNotBeDualBanked(addr: UInt): Bool = isLastBankInBlock(addr)
 
   def blockAlign(addr: UInt): UInt = ~(~addr | U(cacheParams.blockBytes - 1, addr.getWidth bits))
   def bankAlign(addr: UInt): UInt = ~(~addr | U(bankBytes - 1, addr.getWidth bits))
@@ -140,32 +122,19 @@ trait HasBoomFrontendParameters extends HasL1ICacheParameters
 
   def nextBank(addr: UInt): UInt = bankAlign(addr) + bankBytes
   def nextFetch(addr: UInt): UInt = {
-    if (nBanks == 1) {
-      bankAlign(addr) + bankBytes
-    } else {
-      require(nBanks == 2)
-      bankAlign(addr) + Mux(mayNotBeDualBanked(addr), U(bankBytes, addr.getWidth bits), U(fetchBytes, addr.getWidth bits))
-    }
+    bankAlign(addr) + Mux(mayNotBeDualBanked(addr), U(bankBytes, addr.getWidth bits), U(fetchBytes, addr.getWidth bits))
   }
 
   def fetchMask(addr: UInt): UInt = {
     val idx = addr(log2Ceil(fetchWidth) + log2Ceil(coreInstBytes) - 1 downto log2Ceil(coreInstBytes))
-    if (nBanks == 1) {
-      (U((1 << fetchWidth) - 1, fetchWidth bits) << idx).resize(fetchWidth + (1 << idx.getWidth) - 1)
-    } else {
-      val shamt = idx(log2Ceil(fetchWidth) - 2 downto 0)
-      val shifted = U((1 << fetchWidth) - 1, fetchWidth bits) << shamt
-      val end_mask = Mux(mayNotBeDualBanked(addr), Fill(fetchWidth / 2, True).resize(shifted.getWidth), Fill(fetchWidth, True).resize(shifted.getWidth))
-      shifted & end_mask
-    }
+    val shamt = idx(log2Ceil(fetchWidth) - 2 downto 0)
+    val shifted = U((1 << fetchWidth) - 1, fetchWidth bits) << shamt
+    val end_mask = Mux(mayNotBeDualBanked(addr), Fill(fetchWidth / 2, True).resize(shifted.getWidth), Fill(fetchWidth, True).resize(shifted.getWidth))
+    shifted & end_mask
   }
 
   def bankMask(addr: UInt): UInt = {
-    if (nBanks == 1) {
-      U(1, 1 bits)
-    } else {
-      Mux(mayNotBeDualBanked(addr), U(1, 2 bits), U(3, 2 bits))
-    }
+    Mux(mayNotBeDualBanked(addr), U(1, 2 bits), U(3, 2 bits))
   }
 }
 
@@ -206,7 +175,6 @@ class FetchBundle(implicit p: Parameters) extends BoomBundle
   val br_mask       = UInt(fetchWidth bits)
 
   val ghist         = new GlobalHistory
-  val lhist         = Vec.fill(nBanks)(UInt(localHistoryLength bits))
 
   val xcpt_pf_if    = Bool() // I-TLB miss (instruction fetch fault).
   val pmp_ae_first  = Bits(fetchWidth bits)

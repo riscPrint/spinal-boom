@@ -45,7 +45,7 @@ class ComponentEmitterTrace(val builders: Seq[mutable.StringBuilder], val string
     if (this.hashCode() != obj.hashCode()) return false //Collision into hashmap implementation don't check it XD
     obj match {
       case that: ComponentEmitterTrace =>
-        return (this.builders, that.builders).zipped.map(_ == _).forall(e => e) && (this.strings, that.strings).zipped.map(_ == _).forall(e => e)
+        return this.builders.lazyZip(that.builders).map(_ == _).forall(e => e) && this.strings.lazyZip(that.strings).map(_ == _).forall(e => e)
     }
   }
 

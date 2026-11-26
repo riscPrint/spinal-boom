@@ -116,7 +116,7 @@ object BoomSim {
    * `rvfi` adds the RVFI port and riscv-formal's RVFI monitor (from formal/).
    * `konata` adds the pipeline probes `run` needs to write a Konata log.
    */
-  def compile(tile: BoomTileParams = BoomConfigs.small(), name: String = "small", wave: Boolean = false,
+  def compile(tile: BoomTileParams = BoomConfigs.giga(), name: String = "giga", wave: Boolean = false,
               rvfi: Boolean = false, konata: Boolean = false,
               workspace: String = "simWorkspace"): SimCompiled[BoomSimTop] = {
     implicit val p: Parameters = params(tile, rvfi)

@@ -294,7 +294,7 @@ class BoomMSHR(implicit p: Parameters) extends BoomModule()(p)
     } elsewhen (rpq.io.empty && !commit_line) {
       when (!rpq.io.enq.fire) {
         state := s_mem_finish_1
-        finish_to_prefetch := Bool(enablePrefetching)
+        finish_to_prefetch := True
       }
     } elsewhen (rpq.io.empty || (rpq.io.deq.valid && !drain_load)) {
       // io.commit_val is for the prefetcher. it tells the prefetcher that this line was correctly acquired
@@ -550,8 +550,7 @@ class BoomMSHRFile(implicit p: Parameters) extends BoomModule()(p)
   for (w <- 0 until lsuWidth)
     io.req(w).ready := False
 
-  val prefetcher: DataPrefetcher = if (enablePrefetching) new NLPrefetcher
-                                                     else new NullPrefetcher
+  val prefetcher: DataPrefetcher = new NLPrefetcher
 
   io.prefetch << prefetcher.io.prefetch
 

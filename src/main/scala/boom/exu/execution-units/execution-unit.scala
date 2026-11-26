@@ -320,20 +320,9 @@ class MemExeUnit(
     val effective_address = Cat(ea_sign, sum(vaddrBits-1 downto 0)).asUInt
 
     val agen = master(Flow(new MemGen)).setName("io_agen")
-    if (enableAgenStage) {
-      val agenInput = new MemGen
-      agenInput.uop  := UpdateBrMask(io_brupdate, exe_uop.payload)
-      agenInput.data := Sext(effective_address, xLen)
-      agen << FixedPipeline(
-        exe_uop.valid &&
-        exe_uop.payload.fu_code(FC_AGEN) &&
-        !IsKilledByBranch(io_brupdate, io_kill, exe_uop.payload),
-        agenInput, 1, holdPayload = false, resetValid = false)
-    } else {
-      agen.valid        := exe_uop.valid && exe_uop.payload.fu_code(FC_AGEN)
-      agen.payload.uop  := exe_uop.payload
-      agen.payload.data := Sext(effective_address, xLen)
-    }
+    agen.valid        := exe_uop.valid && exe_uop.payload.fu_code(FC_AGEN)
+    agen.payload.uop  := exe_uop.payload
+    agen.payload.data := Sext(effective_address, xLen)
     Some(agen)
   } else {
     assert(!(exe_uop.valid && exe_uop.payload.fu_code(FC_AGEN)))
@@ -359,15 +348,13 @@ class UniqueExeUnit(
   val hasCSR           : Boolean       = false,
   val hasMul           : Boolean       = false,
   val hasDiv           : Boolean       = false,
-  val hasIfpu          : Boolean       = false,
-  val hasRocc          : Boolean       = false
+  val hasIfpu          : Boolean       = false
 )(implicit p: Parameters) extends ExecutionUnit("Unq")
   with HasIrfReadPorts
   with HasImmrfReadPort
   with MemoryOpConstants
 {
   def nReaders = 2
-  require(!hasRocc, "RoCC is not supported by the Spinal port")
 
   val io_squash_iss = out Bool()
   io_squash_iss := ((io_arb_irf_reqs(0).valid && !io_arb_irf_reqs(0).ready) ||

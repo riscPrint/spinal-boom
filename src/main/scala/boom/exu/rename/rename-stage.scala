@@ -200,23 +200,12 @@ class RenameStage(
     numPhysRegs,
     false,
     float)
-  val freelist: AbstractRenameFreeList =
-    if (
-      (enableColumnALUWrites && int) ||
-      (enableBankedFPFreelist && float)
-    ) {
-      new BankedRenameFreeList(
-        plWidth,
-        numPhysRegs
-      )
-    } else {
-      new RenameFreeList(
-        plWidth,
-        plWidth,
-        numPhysRegs,
-        false
-      )
-    }
+  val freelist = new RenameFreeList(
+    plWidth,
+    plWidth,
+    numPhysRegs,
+    false
+  )
   val busytable = new RenameBusyTable(
     plWidth,
     numPhysRegs,
@@ -293,7 +282,6 @@ class RenameStage(
   for ((uop, w) <- ren2_uops.zipWithIndex) {
     val preg = freelist.io.alloc_pregs(w).payload
     uop.pdst := preg.resized
-    uop.dis_col_sel := (if (coreWidth > 1) UIntToOH(preg(log2Ceil(coreWidth)-1 downto 0), 1 << log2Ceil(coreWidth)).resized else U(0, 1 bits))
   }
   assert (!RegNext(io.rollback) || PopCount(freelist.io.debug_freelist.asBools) === (numPhysRegs - 32),
     "[freelist] Leaking physical registers.")

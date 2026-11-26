@@ -13,7 +13,7 @@ case class TageResp() extends Bundle {
   val u   = UInt(2 bits)
 }
 
-class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPeriod: Int, val singlePorted: Boolean)
+class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPeriod: Int)
   (implicit p: Parameters) extends BoomModule()(p)
   with HasBoomFrontendParameters
 {
@@ -107,12 +107,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
 
   val update_wdata = Vec.fill(bankWidth)(TageEntry())
   val wen = CombInit(doing_reset || io.update_mask.reduce(_||_))
-  val rdata = if (singlePorted) table.read(s1_hashed_idx, !wen && io.f1_req_valid) else table.read(s1_hashed_idx, io.f1_req_valid)
-  when (FixedPipeline.delay(wen, 1) && Bool(singlePorted)) {
-    s2_req_rtage := Vec.fill(bankWidth)(TageEntry()).getZero
-  } otherwise {
-    s2_req_rtage := rdata
-  }
+  s2_req_rtage := table.read(s1_hashed_idx, io.f1_req_valid)
   table.write(
     Mux(doing_reset, reset_idx, update_idx),
     Mux(doing_reset, Vec.fill(bankWidth)(TageEntry()).getZero, update_wdata),
@@ -121,12 +116,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
 
   val update_u_mask = Vec((0 until bankWidth*2) map {i => io.update_u_mask(i / 2)})
   val update_u_wen = CombInit(doing_reset || doing_clear_u || update_u_mask.reduce(_||_))
-  val u_rdata = if (singlePorted) {
-    us.read(s1_hashed_idx, !update_u_wen && io.f1_req_valid)
-  } else {
-    us.read(s1_hashed_idx, io.f1_req_valid)
-  }
-  s2_req_rus := u_rdata
+  s2_req_rus := us.read(s1_hashed_idx, io.f1_req_valid)
   us.write(
     Mux(doing_reset, reset_idx, Mux(doing_clear_u, clear_u_idx.resize(log2Ceil(nRows)), update_idx)),
     Mux(doing_reset || doing_clear_u, Vec.fill(bankWidth*2)(False), Vec(CatLsbFirst(io.update_u).asBools)),
@@ -179,8 +169,7 @@ case class BoomTageParams(
                                               (  256,      16,     8),
                                               (  128,      32,     9),
                                               (  128,      64,     9)),
-  uBitPeriod: Int = 2048,
-  singlePorted: Boolean = false
+  uBitPeriod: Int = 2048
 )
 
 class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implicit p: Parameters) extends BranchPredictorBank()(p)
@@ -209,7 +198,7 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
 
   val tt = params.tableInfo map {
     case (n, l, s) => {
-      val t = new TageTable(n, s, l, params.uBitPeriod, params.singlePorted)
+      val t = new TageTable(n, s, l, params.uBitPeriod)
       t.io.f1_req_valid := s1_valid
       t.io.f1_req_pc    := s1_pc
       t.io.f1_req_ghist := io.f1_ghist

@@ -6,13 +6,13 @@ import rocketchip.config._
 import boom.common._
 
 /**
- * Generates formal/BoomFormalTop.v: the small BOOM with RVFI enabled behind
+ * Generates formal/BoomFormalTop.v: giga BOOM with RVFI enabled behind
  * free-running TileLink responders, for riscv-formal (see formal/README.md).
  */
 object GenFormal {
   val resetVector = BigInt("80000000", 16)
 
-  def params(tile: BoomTileParams = BoomConfigs.small()): Parameters = Parameters(
+  def params(tile: BoomTileParams = BoomConfigs.giga()): Parameters = Parameters(
     tile.copy(core = tile.core.copy(enableRVFI = true)),
     SystemParams(paddrBits = 32, memoryMap = Seq(
       MemoryRegion("mem", Seq(AddressSet(0x80000000L, 0x0fffffffL)), RegionType.CACHED, executable = true,

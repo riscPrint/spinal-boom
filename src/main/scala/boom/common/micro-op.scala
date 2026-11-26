@@ -43,8 +43,6 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val iw_p2_bypass_hint = Bool()
   val iw_p3_bypass_hint = Bool()
 
-  val dis_col_sel      = UInt(coreWidth bits) // If using column-issue ALUs with 1-wide dispatch, which column to issue to?
-
   val br_mask          = UInt(maxBrCount bits)  // which branches are we being speculated under?
   val br_tag           = UInt(brTagSz bits)
 
@@ -113,8 +111,8 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   def is_br: Bool      = br_type.isOneOf(B_NE, B_EQ, B_GE, B_GEU, B_LT, B_LTU)
   def is_jal: Bool     = br_type === B_J.U
   def is_jalr: Bool    = br_type === B_JR.U
-  def is_sfb_br: Bool  = br_type =/= B_N.U && is_sfb && Bool(enableSFBOpt) // Does this write a predicate
-  def is_sfb_shadow: Bool = br_type === B_N.U && is_sfb && Bool(enableSFBOpt) // Is this predicated
+  def is_sfb_br: Bool  = br_type =/= B_N.U && is_sfb // Does this write a predicate
+  def is_sfb_shadow: Bool = br_type === B_N.U && is_sfb // Is this predicated
   val ldst_is_rs1      = Bool() // If this is set and we are predicated off, copy rs1 to dst,
                                 // else copy rs2 to dst
 

@@ -50,7 +50,7 @@ class ExecutionStageTestTop(val clearP3: Boolean)(implicit p: Parameters) extend
 
 class ExecutionStageSpec extends AnyFunSuite {
   test("integer execution operand taps elaborate with RVFI enabled") {
-    val tile = BoomConfigs.small()
+    val tile = BoomConfigs.giga()
     implicit val p: Parameters = BoomTestParams(tile.copy(core = tile.core.copy(enableRVFI = true)))
     SpinalBoomConfig("generated/test").generateVerilog(new MemExeUnit(hasAGen = true, hasDGen = true))
     SpinalBoomConfig("generated/test").generateVerilog(

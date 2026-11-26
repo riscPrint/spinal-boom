@@ -23,9 +23,7 @@ case class IssueParams(
   dispatchWidth: Int = 1,
   issueWidth: Int = 1,
   numEntries: Int = 8,
-  useFullIssueSel: Boolean = true,
   numSlowEntries: Int = 0,
-  useMatrixIssue: Boolean = false,
   iqType: Int
 )
 
@@ -75,14 +73,10 @@ abstract class IssueUnit(
 
 object IssueUnit
 {
-  def apply(params: IssueParams, numWakeupPorts: Int, useColumnIssueUnit: Boolean, useSingleWideDispatch: Boolean)(implicit p: Parameters): IssueUnit = {
+  def apply(params: IssueParams, numWakeupPorts: Int, useColumnIssueUnit: Boolean)(implicit p: Parameters): IssueUnit = {
     if (useColumnIssueUnit)
-      new IssueUnitBanked(params, numWakeupPorts, useSingleWideDispatch)
+      new IssueUnitBanked(params, numWakeupPorts)
     else
-      if (params.useMatrixIssue) {
-        new IssueUnitAgeMatrix(params, numWakeupPorts)
-      } else {
-        new IssueUnitCollapsing(params, numWakeupPorts)
-      }
+      new IssueUnitCollapsing(params, numWakeupPorts)
   }
 }

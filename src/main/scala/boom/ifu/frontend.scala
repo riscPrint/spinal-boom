@@ -145,15 +145,11 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   val f1_redirects = (0 until fetchWidth) map { i =>
     f1_mask(i) && s1_bpd_resp.preds(i).predicted_pc.valid && s1_bpd_resp.preds(i).taken
   }
-  val f1_do_redirect = f1_redirects.reduce(_||_) && Bool(useBPD)
+  val f1_do_redirect = f1_redirects.reduce(_||_)
   val f1_targs = s1_bpd_resp.preds.map(_.predicted_pc.payload)
-  val f1_targ = if (nBanks == 1) {
-    Mux1H(f1_redirects, f1_targs)
-  } else {
-    require(nBanks == 2)
-    Mux(f1_redirects.take(bankWidth).reduce(_||_), Mux1H(f1_redirects.take(bankWidth), f1_targs.take(bankWidth)),
-      Mux1H(f1_redirects.drop(bankWidth), f1_targs.drop(bankWidth)))
-  }
+  require(nBanks == 2)
+  val f1_targ = Mux(f1_redirects.take(bankWidth).reduce(_||_), Mux1H(f1_redirects.take(bankWidth), f1_targs.take(bankWidth)),
+    Mux1H(f1_redirects.drop(bankWidth), f1_targs.drop(bankWidth)))
   val f1_next_fetch = nextFetch(s1_vpc)
   val f1_predicted_target = Mux(f1_do_redirect,
                                 f1_targ,
@@ -189,7 +185,6 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   val TLB_RESP = f1.insert(s1_tlb_resp)
   val TLB_MISS = f1.insert(s1_tlb_miss)
   val NEXT_FETCH = f1.insert(f1_next_fetch)
-  val F1_TARG = if (useSlowBTBRedirect) Some(f1.insert(f1_targ)) else None
   f1c.terminateWhen(f1_clear)
   // F1 comparisons must use f1(GHIST), before this next-value repair mux.
   val s2_ghist_next = f1c.bypass(GHIST)
@@ -221,10 +216,10 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     f2_fetch_mask(i) && f2_bpd_resp.preds(i).predicted_pc.valid && f2_bpd_resp.preds(i).taken
   }
   val f2_targs = f2_bpd_resp.preds.map(_.predicted_pc.payload)
-  val f2_do_redirect = f2_redirects.reduce(_||_) && Bool(useBPD)
+  val f2_do_redirect = f2_redirects.reduce(_||_)
   val f2_next_fetch = f2(NEXT_FETCH)
   val f2_predicted_target = Mux(f2_do_redirect,
-                                if (useSlowBTBRedirect) f2(F1_TARG.get) else PriorityMux(f2_redirects, f2_targs),
+                                PriorityMux(f2_redirects, f2_targs),
                                 f2_next_fetch)
   val f2_predicted_ghist = s2_ghist.update(
     f2_bpd_resp.preds.map(p => p.is_br && p.predicted_pc.valid).asUInt & f2_fetch_mask.resize(fetchWidth),
@@ -349,7 +344,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   f2_fetch_bundle.end_half.valid   := bank_prev_is_half
   f2_fetch_bundle.end_half.payload := bank_prev_half
 
-  val f2_correct_f1_ghist = s1_ghist =/= f2_predicted_ghist && Bool(enableGHistStallRepair)
+  val f2_correct_f1_ghist = s1_ghist =/= f2_predicted_ghist
 
   when ((s2_valid && !icache.io.resp.valid) ||
         (s2_valid && icache.io.resp.valid && !f3_ready)) {
@@ -497,7 +492,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
       //  2) the BPD believes this is a branch and says we should take it
       f3_redirects(i)    := f3_mask(i) && (
         brsigs.cfi_type === CFI_JAL || brsigs.cfi_type === CFI_JALR ||
-        (brsigs.cfi_type === CFI_BR && f3_bpd_resp.preds(i).taken && Bool(useBPD))
+        (brsigs.cfi_type === CFI_BR && f3_bpd_resp.preds(i).taken)
       )
 
       f3_br_mask(i)   := f3_mask(i) && brsigs.cfi_type === CFI_BR
@@ -517,7 +512,6 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
   f3_fetch_bundle.cfi_is_ret    := f3_ret_mask (f3_fetch_bundle.cfi_idx.payload)
   f3_fetch_bundle.cfi_npc_plus4 := f3_npc_plus4_mask(f3_fetch_bundle.cfi_idx.payload)
 
-  f3_fetch_bundle.lhist    := f3_bpd_resp.lhist
   f3_fetch_bundle.bpd_meta := f3_bpd_resp.meta
 
   when (f3.io.deq.fire) {
@@ -535,10 +529,10 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     val redirects = Vec((0 until fetchWidth) map { i =>
       f3.io.deq.payload.mask(i) && f3_bpd_resp.preds(i).predicted_pc.valid && f3_bpd_resp.preds(i).taken
     })
-    val target = if (useSlowBTBRedirect) f3.io.deq.payload.next_pc else PriorityMux(redirects, f3_predicted_targs)
+    val target = PriorityMux(redirects, f3_predicted_targs)
     (redirects, target)
   }
-  val f3_predicted_do_redirect = f3_predicted_redirects.reduce(_||_) && Bool(useBPD)
+  val f3_predicted_do_redirect = f3_predicted_redirects.reduce(_||_)
 
   val f3_predicted_target = Mux(f3_predicted_do_redirect,
                                 f3_redirect_target,
@@ -560,8 +554,8 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
 
   f3_fetch_bundle.next_pc       := f3_decoded_target
 
-  val f3_correct_f2_ghist = s2_ghist =/= f3_predicted_ghist && Bool(enableGHistStallRepair)
-  val f3_correct_f1_ghist = s1_ghist =/= f3_predicted_ghist && Bool(enableGHistStallRepair)
+  val f3_correct_f2_ghist = s2_ghist =/= f3_predicted_ghist
+  val f3_correct_f1_ghist = s1_ghist =/= f3_predicted_ghist
 
   when (f3.io.deq.valid && f4_ready) {
     when (s2_valid && s2_vpc === f3_predicted_target && !f3_correct_f2_ghist) {
@@ -587,14 +581,13 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
 
   // When f3 finds a btb mispredict, queue up a bpd correction update
   val f4_btb_corrections = new Queue(new BranchPredictionUpdate, 2)
-  f4_btb_corrections.io.enq.valid := f3.io.deq.fire && f3_btb_mispredicts.reduce(_||_) && Bool(enableBTBFastRepair)
+  f4_btb_corrections.io.enq.valid := f3.io.deq.fire && f3_btb_mispredicts.reduce(_||_)
   f4_btb_corrections.io.enq.payload.assignDontCare()
   f4_btb_corrections.io.enq.payload.is_mispredict_update := False
   f4_btb_corrections.io.enq.payload.is_repair_update     := False
   f4_btb_corrections.io.enq.payload.btb_mispredicts      := f3_btb_mispredicts.asUInt
   f4_btb_corrections.io.enq.payload.pc                   := f3_fetch_bundle.pc
   f4_btb_corrections.io.enq.payload.ghist                := f3_fetch_bundle.ghist
-  f4_btb_corrections.io.enq.payload.lhist                := f3_fetch_bundle.lhist
   f4_btb_corrections.io.enq.payload.meta                 := f3_fetch_bundle.bpd_meta
 
   // -------------------------------------------------------
@@ -629,7 +622,6 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     ~f4.io.deq.payload.sfb_masks(i)(2*fetchWidth-1 downto fetchWidth)
   })
   val f4_sfbs = Vec((0 until fetchWidth) map { i =>
-    Bool(enableSFBOpt) &&
     ((~f4_shadowable_masks(i) === 0) &&
      (~f3_shadowable_masks(i) === 0) &&
      f4.io.deq.payload.sfbs(i) &&
@@ -699,11 +691,11 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     f4.io.deq.payload.cfi_is_call,
     f4.io.deq.payload.cfi_is_ret
   )
-  val f4_decoded_target = Mux(f4.io.deq.payload.cfi_idx.valid && f4.io.deq.payload.cfi_is_ret && Bool(useBPD) && Bool(useRAS),
+  val f4_decoded_target = Mux(f4.io.deq.payload.cfi_idx.valid && f4.io.deq.payload.cfi_is_ret,
     ras.io.read_addr, f4.io.deq.payload.next_pc)
-  val f4_correct_f1_ghist = s1_ghist =/= f4_decoded_ghist && Bool(enableGHistStallRepair)
-  val f4_correct_f2_ghist = s2_ghist =/= f4_decoded_ghist && Bool(enableGHistStallRepair)
-  val f4_correct_f3_ghist = f3.io.deq.payload.ghist =/= f4_decoded_ghist && Bool(enableGHistStallRepair)
+  val f4_correct_f1_ghist = s1_ghist =/= f4_decoded_ghist
+  val f4_correct_f2_ghist = s2_ghist =/= f4_decoded_ghist
+  val f4_correct_f3_ghist = f3.io.deq.payload.ghist =/= f4_decoded_ghist
 
   when (f4.io.deq.valid) {
     when (f3.io.deq.valid && f3.io.deq.payload.pc === f4_decoded_target && !f4_correct_f3_ghist) {
@@ -737,7 +729,7 @@ class BoomFrontend(icParams: ICacheParams, staticIdForMetadataUseOnly: Int)(impl
     f4.io.deq.payload.cfi_npc_plus4, U(4, vaddrBitsExtended bits), U(2, vaddrBitsExtended bits))
   ras.io.write_idx   := WrapInc(f4.io.deq.payload.ghist.ras_idx, nRasEntries)
 
-  when (ftq.io.ras_update && Bool(enableRasTopRepair)) {
+  when (ftq.io.ras_update) {
     ras.io.write_valid := True
     ras.io.write_idx   := ftq.io.ras_update_idx
     ras.io.write_addr  := ftq.io.ras_update_pc

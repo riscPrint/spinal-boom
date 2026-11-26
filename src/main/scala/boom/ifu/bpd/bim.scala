@@ -16,10 +16,7 @@ class BIMMeta(implicit p: Parameters) extends BoomBundle()(p)
 
 case class BoomBIMParams(
   nSets: Int = 2048,
-  nCols: Int = 8,
-  singlePorted: Boolean = true,
-  useFlops: Boolean = false,
-  slow: Boolean = false
+  nCols: Int = 8
 )
 
 class BIMBranchPredictorBank(params: BoomBIMParams = BoomBIMParams())(implicit p: Parameters) extends BranchPredictorBank()(p)
@@ -63,9 +60,7 @@ class BIMBranchPredictorBank(params: BoomBIMParams = BoomBIMParams())(implicit p
     s2_resp(w)        := s2_valid && s2_req_rdata(w)(1) && !doing_reset
     s2_meta.bims(w)   := s2_req_rdata(w)
 
-    if (!params.slow) {
-      io.resp.f2(w).taken := s2_resp(w)
-    }
+    io.resp.f2(w).taken := s2_resp(w)
     io.resp.f3(w).taken := s3_resp(w)
   }
   io.f3_meta := predAt(s2_meta.asBits.asUInt, 2, 3).resized
@@ -110,38 +105,15 @@ class BIMBranchPredictorBank(params: BoomBIMParams = BoomBIMParams())(implicit p
   }
 
   for (c <- 0 until nCols) {
-    val rdata = Vec.fill(bankWidth)(UInt(2 bits))
-    rdata.assignDontCare()
-    val (ren, ridx) = if (params.slow) (s1_col_mask(c), s1_col_idx) else (s0_col_mask(c), s0_col_idx)
+    val (ren, ridx) = (s0_col_mask(c), s0_col_idx)
     val wen = CombInit(doing_reset || (s1_update.valid && s1_update.payload.is_commit_update && s1_update_col_mask(c) && !ren))
-    if (params.slow) {
-      s2_req_rdata_all(c) := rdata
-    } else {
-      s2_req_rdata_all(c) := RegNext(rdata)
-    }
-    if (params.useFlops) {
-      val data = Reg(Vec.fill(nSetsPerCol)(Vec.fill(bankWidth)(UInt(2 bits))))
-      when (wen && doing_reset) {
-        data.write(reset_idx)(_.foreach(_ := 2))
-      } elsewhen (wen) {
-        for (i <- 0 until bankWidth) {
-          when (s1_update_wmask(i)) {
-            data.write(s1_update_col_idx)(_(i) := s1_update_wdata(i))
-          }
-        }
-      }
-      when (RegNext(ren) && !(wen && Bool(params.singlePorted))) {
-        rdata := data.at(RegNext(ridx))
-      }
-    } else {
-      val data = new SyncReadVecMem(nSetsPerCol, bankWidth, UInt(2 bits)).setName(s"bim_col_${c}")
-      val r = if (params.singlePorted) data.read(ridx, ren && !wen) else data.read(ridx, ren)
-      rdata := r
-      val widx = Mux(doing_reset, reset_idx.resize(s1_update_col_idx.getWidth), s1_update_col_idx)
-      val wdata = Mux(doing_reset, Vec.fill(bankWidth)(U(2, 2 bits)), s1_update_wdata)
-      val wmask = Mux(doing_reset, ~U(0, bankWidth bits), s1_update_wmask.asUInt)
-      data.write(widx, wdata, wmask.asBools, wen)
-    }
+    val data = new SyncReadVecMem(nSetsPerCol, bankWidth, UInt(2 bits)).setName(s"bim_col_${c}")
+    val r = data.read(ridx, ren && !wen)
+    s2_req_rdata_all(c) := RegNext(r)
+    val widx = Mux(doing_reset, reset_idx.resize(s1_update_col_idx.getWidth), s1_update_col_idx)
+    val wdata = Mux(doing_reset, Vec.fill(bankWidth)(U(2, 2 bits)), s1_update_wdata)
+    val wmask = Mux(doing_reset, ~U(0, bankWidth bits), s1_update_wmask.asUInt)
+    data.write(widx, wdata, wmask.asBools, wen)
   }
   when (s1_update_wmask.reduce(_||_) && s1_update.valid && s1_update.payload.is_commit_update) {
     when (wrbypass_hit) {
